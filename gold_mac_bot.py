@@ -1,663 +1,739 @@
 import os
 import json
 import time
+import math
 import datetime
+import urllib.request
+import urllib.parse
 import xml.etree.ElementTree as ET
-import requests
-import pandas as pd
-import numpy as np
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
-# ==========================================
-# 環境変数と設定
-# ==========================================
-TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "").strip()
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-LINE_USER_ID = os.environ.get("LINE_USER_ID", "").strip()
+# ==============================================================================
+# 環境変数（GitHub Secrets に設定）
+# ==============================================================================
+TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-LOG_FILE = "trade_log.json"
+genai.configure(api_key=GEMINI_API_KEY)
+MODEL_NAME = "gemini-2.5-flash"
 
-GOLD_META = {"symbol": "XAU/USD", "name": "ゴールド（最優先VIP）", "currencies": ["USD"], "pip_unit": 1.0, "digits": 2}
-
-SUB_SYMBOLS = [
-    {"symbol": "USD/JPY", "name": "ドル円", "currencies": ["USD", "JPY"], "pip_unit": 0.01, "digits": 3},
-    {"symbol": "EUR/USD", "name": "ユーロドル", "currencies": ["EUR", "USD"], "pip_unit": 0.0001, "digits": 5},
-    {"symbol": "GBP/JPY", "name": "ポンド円", "currencies": ["GBP", "JPY"], "pip_unit": 0.01, "digits": 3},
-    {"symbol": "GBP/USD", "name": "ポンドドル", "currencies": ["GBP", "USD"], "pip_unit": 0.0001, "digits": 5},
-    {"symbol": "EUR/JPY", "name": "ユーロ円", "currencies": ["EUR", "JPY"], "pip_unit": 0.01, "digits": 3},
-    {"symbol": "AUD/USD", "name": "豪ドル米ドル", "currencies": ["AUD", "USD"], "pip_unit": 0.0001, "digits": 5},
-]
-
-ALL_SYMBOLS = [GOLD_META] + SUB_SYMBOLS
 JST = datetime.timezone(datetime.timedelta(hours=9))
+NOW_JST = datetime.datetime.now(JST)
+
+GOLD_SYMBOL = "XAU/USD"
+SUB_PAIRS = ["USD/JPY", "EUR/USD", "GBP/JPY", "GBP/USD", "EUR/JPY", "AUD/USD"]
+
+TRADE_LOG_FILE = "trade_log.json"
+EVOLUTION_FILE = "ai_evolution.json"
 
 
-def now_jst():
-    return datetime.datetime.now(JST)
+# ==============================================================================
+# 1. JSON データ読み書き
+# ==============================================================================
+def load_json(path, default_data):
+    if not os.path.exists(path):
+        save_json(path, default_data)
+        return default_data
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-# ==========================================
-# 1. 世界情勢・FRB・地政学ニュースのリアルタイム取得
-# ==========================================
-def fetch_world_news_headlines():
-    rss_urls = [
-        "https://news.google.com/rss/search?q=Gold+price+OR+XAUUSD+OR+Federal+Reserve+OR+geopolitics&hl=en-US&gl=US&ceid=US:en",
-        "https://news.google.com/rss/search?q=Middle+East+OR+war+OR+tariff+OR+inflation+gold&hl=en-US&gl=US&ceid=US:en",
-    ]
-    headlines = []
-    seen = set()
-    for url in rss_urls:
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+# ==============================================================================
+# 2. テクニカル指標・壁（サポレジ・節目）計算
+# ==============================================================================
+def calc_ema(closes, period):
+    if len(closes) < period:
+        return closes[-1] if closes else 0.0
+    k = 2 / (period + 1)
+    ema = sum(closes[:period]) / period
+    for price in closes[period:]:
+        ema = price * k + ema * (1 - k)
+    return ema
+
+
+def calc_rsi(closes, period=14):
+    if len(closes) <= period:
+        return 50.0
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        gains.append(max(diff, 0.0))
+        losses.append(max(-diff, 0.0))
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def calc_atr(candles, period=14):
+    if len(candles) <= period:
+        return 0.0
+    trs = []
+    for i in range(1, len(candles)):
+        h = float(candles[i]["high"])
+        l = float(candles[i]["low"])
+        pc = float(candles[i - 1]["close"])
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        trs.append(tr)
+    return sum(trs[-period:]) / period
+
+
+def fetch_candles(symbol, interval, outputsize=60):
+    url = (
+        f"https://api.twelvedata.com/time_series?"
+        f"symbol={urllib.parse.quote(symbol)}&interval={interval}"
+        f"&outputsize={outputsize}&apikey={TWELVE_DATA_API_KEY}"
+    )
+    for attempt in range(2):
         try:
-            res = requests.get(url, timeout=10)
-            if res.status_code != 200:
-                continue
-            root = ET.fromstring(res.content)
-            for item in root.findall(".//item")[:7]:
-                title = (item.findtext("title") or "").strip()
-                pub_date = (item.findtext("pubDate") or "").strip()[:22]
-                if title and title not in seen:
-                    seen.add(title)
-                    headlines.append(f"・[{pub_date}] {title}")
+            req = urllib.request.urlopen(url, timeout=15)
+            data = json.loads(req.read().decode("utf-8"))
+            if "values" in data:
+                # 古い順（時系列昇順）に並べ替え
+                return list(reversed(data["values"]))
+            if data.get("code") == 429 and attempt == 0:
+                print(f"[RateLimit] {symbol} {interval} - 62秒待機します...")
+                time.sleep(62)
         except Exception as e:
-            print("ニュース取得スキップ:", e)
-    return "\n".join(headlines[:12]) if headlines else "最新ニュース取得なし"
-
-
-# ==========================================
-# 2. Twelve Data API 取得（レート制限完全回避）
-# ==========================================
-def fetch_batch_1h(symbols_list):
-    joined = ",".join(symbols_list)
-    url = (
-        f"https://api.twelvedata.com/time_series"
-        f"?symbol={joined}&interval=1h&outputsize=60&apikey={TWELVE_DATA_API_KEY}"
-    )
-    for _ in range(2):
-        res = requests.get(url, timeout=20)
-        data = res.json()
-        if data.get("code") == 429:
-            print("バッチ取得レート制限待機（65秒）...")
-            time.sleep(65)
-            continue
-        result = {}
-        for sym in symbols_list:
-            item = data.get(sym, {})
-            if "values" in item:
-                df = pd.DataFrame(item["values"]).iloc[::-1].reset_index(drop=True)
-                for col in ["open", "high", "low", "close"]:
-                    df[col] = df[col].astype(float)
-                result[sym] = df
-        return result
-    return {}
-
-
-def fetch_single_tf(symbol, interval, outputsize=50):
-    url = (
-        f"https://api.twelvedata.com/time_series"
-        f"?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={TWELVE_DATA_API_KEY}"
-    )
-    for _ in range(2):
-        res = requests.get(url, timeout=15)
-        data = res.json()
-        if "values" in data:
-            df = pd.DataFrame(data["values"]).iloc[::-1].reset_index(drop=True)
-            for col in ["open", "high", "low", "close"]:
-                df[col] = df[col].astype(float)
-            return df
-        if data.get("code") == 429 or "run out of API credits" in data.get("message", ""):
-            print(f"[{symbol} {interval}] レート制限待機（65秒）...")
-            time.sleep(65)
-        else:
-            print(f"[{symbol} {interval}] 取得エラー: {data.get('message')}")
-            return None
-    return None
-
-
-# ==========================================
-# 3. 精密テクニカル＆プライスアクション＆ドル強弱解析
-# ==========================================
-def analyze_dataframe(df, pa_bars=3):
-    close = df["close"]
-    high = df["high"]
-    low = df["low"]
-    open_p = df["open"]
-
-    ema20 = close.ewm(span=20, adjust=False).mean()
-    ema50 = close.ewm(span=50, adjust=False).mean()
-
-    delta = close.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
-    rs = gain / loss.replace(0, 1e-9)
-    rsi14 = (100 - (100 / (1 + rs))).iloc[-1]
-
-    tr = pd.concat(
-        [high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1
-    ).max(axis=1)
-    atr14 = tr.rolling(14).mean().iloc[-1]
-
-    up_move = high.diff()
-    down_move = -low.diff()
-    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-    atr_smooth = tr.ewm(alpha=1 / 14, adjust=False).mean()
-    plus_di = 100 * (pd.Series(plus_dm).ewm(alpha=1 / 14, adjust=False).mean() / atr_smooth.replace(0, 1e-9))
-    minus_di = 100 * (pd.Series(minus_dm).ewm(alpha=1 / 14, adjust=False).mean() / atr_smooth.replace(0, 1e-9))
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1e-9)
-    adx14 = dx.ewm(alpha=1 / 14, adjust=False).mean().iloc[-1]
-
-    bb_mid = close.rolling(20).mean().iloc[-1]
-    bb_std = close.rolling(20).std().iloc[-1]
-    bb_upper = bb_mid + 2 * bb_std
-    bb_lower = bb_mid - 2 * bb_std
-
-    swing_high = high.iloc[-24:].max()
-    swing_low = low.iloc[-24:].min()
-
-    pa_lines = []
-    for i in range(-pa_bars, 0):
-        o, h, l, c = open_p.iloc[i], high.iloc[i], low.iloc[i], close.iloc[i]
-        body = abs(c - o)
-        upper_wick = h - max(o, c)
-        lower_wick = min(o, c) - l
-        candle_type = "陽線" if c >= o else "陰線"
-        pa_lines.append(
-            f"{df['datetime'].iloc[i][-5:]} {candle_type} (始:{o} 高:{h} 安:{l} 終:{c} | 上ヒゲ:{upper_wick:.2f} 下ヒゲ:{lower_wick:.2f} 実体:{body:.2f})"
-        )
-
-    # トレンド判定（EMA20と価格の位置＋EMA傾きを考慮して転換初動も捉える）
-    ema20_slope = ema20.iloc[-1] - ema20.iloc[-4]
-    if close.iloc[-1] > ema20.iloc[-1] and (ema20.iloc[-1] > ema50.iloc[-1] or ema20_slope > 0):
-        trend = "UP"
-    elif close.iloc[-1] < ema20.iloc[-1] and (ema20.iloc[-1] < ema50.iloc[-1] or ema20_slope < 0):
-        trend = "DOWN"
-    else:
-        trend = "RANGE"
-
-    # ブレイクアウト接近判定（直近24本高値・安値まで 0.5×ATR 以内）
-    dist_to_high = swing_high - close.iloc[-1]
-    dist_to_low = close.iloc[-1] - swing_low
-    near_breakout = "なし"
-    if 0 <= dist_to_high <= atr14 * 0.6:
-        near_breakout = f"上値ブレイク接近（高値 {swing_high} まであと {dist_to_high:.4f}）"
-    elif 0 <= dist_to_low <= atr14 * 0.6:
-        near_breakout = f"下値ブレイク接近（安値 {swing_low} まであと {dist_to_low:.4f}）"
-
-    return {
-        "close": close.iloc[-1],
-        "ema20": ema20.iloc[-1],
-        "ema50": ema50.iloc[-1],
-        "rsi14": rsi14,
-        "atr14": atr14,
-        "adx14": adx14,
-        "bb_upper": bb_upper,
-        "bb_lower": bb_lower,
-        "swing_high": swing_high,
-        "swing_low": swing_low,
-        "trend": trend,
-        "near_breakout": near_breakout,
-        "pa_text": "\n    ".join(pa_lines),
-    }
-
-
-def calc_usd_strength_summary(h1_map):
-    try:
-        usdjpy = h1_map.get("USD/JPY")
-        eurusd = h1_map.get("EUR/USD")
-        if usdjpy is None or eurusd is None or len(usdjpy) < 5 or len(eurusd) < 5:
-            return "米ドル強弱データ不足"
-        jpy_chg = (usdjpy["close"].iloc[-1] - usdjpy["close"].iloc[-4]) / usdjpy["close"].iloc[-4] * 100
-        eur_chg = (eurusd["close"].iloc[-1] - eurusd["close"].iloc[-4]) / eurusd["close"].iloc[-4] * 100
-        usd_index_proxy = jpy_chg - eur_chg
-        if usd_index_proxy > 0.15:
-            state = "【米ドル全面高（ゴールドには売り圧力）】"
-        elif usd_index_proxy < -0.15:
-            state = "【米ドル全面安（ゴールドには買い追い風）】"
-        else:
-            state = "【米ドル方向感中立】"
-        return f"{state} (直近3時間変化: USD/JPY {jpy_chg:+.2f}%, EUR/USD {eur_chg:+.2f}%)"
-    except Exception:
-        return "米ドル強弱計算スキップ"
-
-
-# ==========================================
-# 4. 経済指標チェック
-# ==========================================
-def get_blocked_currencies_and_events():
-    blocked = set()
-    upcoming_list = []
-    try:
-        res = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json", timeout=10)
-        if res.status_code != 200:
-            return blocked, "指標取得スキップ"
-        events = res.json()
-        now = now_jst()
-        for ev in events:
-            if ev.get("impact") != "High":
-                continue
-            dt_str = ev.get("date", "")
-            country = ev.get("country", "")
-            try:
-                ev_dt = datetime.datetime.fromisoformat(dt_str).astimezone(JST)
-                diff_min = (ev_dt - now).total_seconds() / 60.0
-                if -45 <= diff_min <= 45:
-                    blocked.add(country)
-                if -30 <= diff_min <= 180:
-                    upcoming_list.append(f"{ev_dt.strftime('%H:%M')} [{country}] {ev.get('title')}")
-            except Exception:
-                continue
-        return blocked, ("\n".join(upcoming_list) if upcoming_list else "直近3時間以内の重要指標なし")
-    except Exception:
-        return blocked, "指標取得エラー"
-
-
-# ==========================================
-# 5. 仮想トレードログ・約定/決済判定・敗因学習
-# ==========================================
-def load_logs():
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "r", encoding="utf-8") as f:
-            try:
-                return json.load(f)
-            except Exception:
-                return []
+            print(f"[Error] fetch_candles {symbol} {interval}: {e}")
     return []
 
 
-def save_logs(logs):
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(logs, f, ensure_ascii=False, indent=2)
+def analyze_symbol_market(symbol, is_vip=False):
+    c_1h = fetch_candles(symbol, "1h", 60)
+    time.sleep(8)  # 無料枠8req/min対策
+    c_15m = fetch_candles(symbol, "15min", 60)
+    time.sleep(8)
+    c_5m = fetch_candles(symbol, "5min", 40) if is_vip else []
+    if is_vip:
+        time.sleep(8)
 
+    if not c_1h or not c_15m:
+        return {"symbol": symbol, "error": "データ取得失敗"}
 
-def evaluate_past_trades(logs, m15_map):
-    now = now_jst()
-    for t in logs:
-        if t.get("status") not in ["PENDING", "OPEN"]:
-            continue
-        sym = t.get("symbol", "XAU/USD")
-        df = m15_map.get(sym)
-        if df is None or df.empty:
-            continue
+    closes_1h = [float(x["close"]) for x in c_1h]
+    highs_1h = [float(x["high"]) for x in c_1h]
+    lows_1h = [float(x["low"]) for x in c_1h]
 
-        pip_unit = next((s["pip_unit"] for s in ALL_SYMBOLS if s["symbol"] == sym), 1.0)
-        entry = float(t["entry"])
-        tp = float(t["tp"])
-        sl = float(t["sl"])
-        direction = t["direction"]
+    closes_15m = [float(x["close"]) for x in c_15m]
+    current_price = closes_15m[-1]
 
-        try:
-            created_dt = datetime.datetime.strptime(t["timestamp"], "%Y-%m-%d %H:%M").replace(tzinfo=JST)
-        except Exception:
-            created_dt = now
+    # 直近24時間高値・安値（壁チェック用）
+    recent_24h_high = max(highs_1h[-24:]) if len(highs_1h) >= 24 else max(highs_1h)
+    recent_24h_low = min(lows_1h[-24:]) if len(lows_1h) >= 24 else min(lows_1h)
+    swing_6h_high = max(highs_1h[-6:])
+    swing_6h_low = min(lows_1h[-6:])
 
-        if t["status"] == "PENDING" and (now - created_dt).total_seconds() > 6 * 3600:
-            t["status"] = "EXPIRED"
-            continue
+    # ラウンドナンバー（心理的節目）計算
+    step = 10.0 if "XAU" in symbol else (0.5 if "JPY" in symbol else 0.005)
+    upper_round = math.ceil(current_price / step) * step
+    lower_round = math.floor(current_price / step) * step
 
-        for _, bar in df.iloc[-4:].iterrows():
-            hi, lo = bar["high"], bar["low"]
-            if t["status"] == "PENDING":
-                if lo <= entry <= hi:
-                    t["status"] = "OPEN"
+    ema20_1h = calc_ema(closes_1h, 20)
+    ema50_1h = calc_ema(closes_1h, 50)
+    rsi_1h = calc_rsi(closes_1h, 14)
+    atr_1h = calc_atr(c_1h, 14)
 
-            if t["status"] == "OPEN":
-                if direction == "BUY":
-                    if lo <= sl:
-                        t["status"] = "LOSS"
-                        t["pnl"] = round((sl - entry) / pip_unit, 1)
-                        break
-                    elif hi >= tp:
-                        t["status"] = "WIN"
-                        t["pnl"] = round((tp - entry) / pip_unit, 1)
-                        break
-                elif direction == "SELL":
-                    if hi >= sl:
-                        t["status"] = "LOSS"
-                        t["pnl"] = round((entry - sl) / pip_unit, 1)
-                        break
-                    elif lo <= tp:
-                        t["status"] = "WIN"
-                        t["pnl"] = round((entry - tp) / pip_unit, 1)
-                        break
-    return logs
+    ema20_15m = calc_ema(closes_15m, 20)
+    rsi_15m = calc_rsi(closes_15m, 14)
+    atr_15m = calc_atr(c_15m, 14)
 
-
-def build_learning_feedback(logs):
-    wins = [t for t in logs if t.get("status") == "WIN"]
-    losses = [t for t in logs if t.get("status") == "LOSS"]
-    expired = [t for t in logs if t.get("status") == "EXPIRED"]
-
-    recent_failures = [
-        f"・{t.get('symbol')} {t.get('direction')} @{t.get('entry')} → 結果:{t.get('status')} (根拠:{t.get('reason', '')[:45]})"
-        for t in (losses + expired)[-5:]
-    ]
-    return (
-        f"通算実績: {len(wins)}勝 {len(losses)}敗 / 未約定(EXPIRED): {len(expired)}件。\n"
-        f"【過去の失敗・未約定パターン（同じミスを絶対に繰り返さないこと）】\n"
-        + ("\n".join(recent_failures) if recent_failures else "まだ失敗履歴なし")
-    )
-
-
-# ==========================================
-# 6. LINE通知・週間レポート
-# ==========================================
-def send_line_message(text):
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
-        return
-    requests.post(
-        "https://api.line.me/v2/bot/message/push",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+    result = {
+        "symbol": symbol,
+        "current_price": round(current_price, 4),
+        "1H": {
+            "trend": "上昇" if ema20_1h > ema50_1h else "下降",
+            "ema20": round(ema20_1h, 4),
+            "ema50": round(ema50_1h, 4),
+            "rsi": round(rsi_1h, 1),
+            "atr": round(atr_1h, 4),
         },
-        json={"to": LINE_USER_ID, "messages": [{"type": "text", "text": text[:4900]}]},
-        timeout=15,
-    )
-
-
-def send_weekly_report(logs):
-    wins = [t for t in logs if t.get("status") == "WIN"]
-    losses = [t for t in logs if t.get("status") == "LOSS"]
-    settled = len(wins) + len(losses)
-    win_rate = (len(wins) / settled * 100) if settled > 0 else 0.0
-
-    by_sym = {}
-    for t in wins + losses:
-        s = t.get("symbol", "XAU/USD")
-        by_sym.setdefault(s, {"win": 0, "loss": 0, "pnl": 0.0})
-        if t["status"] == "WIN":
-            by_sym[s]["win"] += 1
-        else:
-            by_sym[s]["loss"] += 1
-        by_sym[s]["pnl"] += float(t.get("pnl", 0))
-
-    lines = [f"・{s}: {v['win']}勝{v['loss']}敗 ({v['pnl']:+.1f})" for s, v in by_sym.items()]
-    report = (
-        f"📅 週間精密AIトレード戦績レポート\n"
-        f"・通算決済：{len(wins)}勝 {len(losses)}敗（勝率 {win_rate:.1f}%）\n\n"
-        f"■ 銘柄別内訳\n" + ("\n".join(lines) if lines else "決済データなし")
-    )
-    send_line_message(report)
-
-
-# ==========================================
-# メイン処理（ハイブリッド戦略 ＋ 2段階アラート通知）
-# ==========================================
-def main():
-    current_time = now_jst()
-    logs = load_logs()
-
-    if current_time.weekday() == 5 and current_time.hour == 12:
-        send_weekly_report(logs)
-        return
-
-    print(f"=== {current_time.strftime('%Y-%m-%d %H:%M')} JST ハイブリッド＆2段階アラートスキャン開始 ===")
-    blocked_currencies, calendar_text = get_blocked_currencies_and_events()
-    world_news_text = fetch_world_news_headlines()
-
-    # 1. 全7銘柄の1時間足を1バッチで取得
-    h1_map = fetch_batch_1h([s["symbol"] for s in ALL_SYMBOLS])
-    usd_strength_text = calc_usd_strength_summary(h1_map)
-    time.sleep(10)
-
-    # 2. 【最優先VIP枠】XAU/USD の 4H・15M・5M を無条件でフル取得
-    df_gold_4h = fetch_single_tf("XAU/USD", "4h", 50)
-    time.sleep(10)
-    df_gold_15m = fetch_single_tf("XAU/USD", "15min", 50)
-    time.sleep(10)
-    df_gold_5m = fetch_single_tf("XAU/USD", "5min", 50)
-    time.sleep(10)
-
-    m15_map = {}
-    if df_gold_15m is not None:
-        m15_map["XAU/USD"] = df_gold_15m
-
-    # 3. サブ6銘柄からトレンド強度（ADX）上位2銘柄のみ抽出
-    sub_candidates = []
-    for meta in SUB_SYMBOLS:
-        sym = meta["symbol"]
-        if any(c in blocked_currencies for c in meta["currencies"]):
-            continue
-        df_1h = h1_map.get(sym)
-        if df_1h is None or len(df_1h) < 50:
-            continue
-        ind_1h = analyze_dataframe(df_1h)
-        if ind_1h["trend"] != "RANGE" and ind_1h["adx14"] >= 20.0:
-            sub_candidates.append((ind_1h["adx14"], meta, ind_1h))
-
-    sub_candidates.sort(key=lambda x: x[0], reverse=True)
-    top_subs = sub_candidates[:2]
-
-    active_syms = {
-        t.get("symbol")
-        for t in logs
-        if t.get("status") in ["PENDING", "OPEN"] and t.get("symbol") != "XAU/USD"
+        "15M": {
+            "ema20": round(ema20_15m, 4),
+            "rsi": round(rsi_15m, 1),
+            "atr": round(atr_15m, 4),
+            "last_3_candles": [
+                {"t": x["datetime"], "o": x["open"], "h": x["high"], "l": x["low"], "c": x["close"]}
+                for x in c_15m[-3:]
+            ],
+        },
+        "walls_and_levels": {
+            "24h_high": round(recent_24h_high, 4),
+            "24h_low": round(recent_24h_low, 4),
+            "6h_high": round(swing_6h_high, 4),
+            "6h_low": round(swing_6h_low, 4),
+            "upper_round_number": round(upper_round, 4),
+            "lower_round_number": round(lower_round, 4),
+            "dist_to_24h_high": round(recent_24h_high - current_price, 4),
+            "dist_to_24h_low": round(current_price - recent_24h_low, 4),
+        },
     }
-    for sym in ({c[1]["symbol"] for c in top_subs} | active_syms):
-        df_15 = fetch_single_tf(sym, "15min", 50)
-        time.sleep(10)
-        if df_15 is not None:
-            m15_map[sym] = df_15
 
-    sub_h4_map = {}
-    for _, meta, _ in top_subs:
-        sym = meta["symbol"]
-        df_4 = fetch_single_tf(sym, "4h", 50)
-        time.sleep(10)
-        if df_4 is not None:
-            sub_h4_map[sym] = analyze_dataframe(df_4)
+    if c_5m:
+        closes_5m = [float(x["close"]) for x in c_5m]
+        result["5M"] = {
+            "ema20": round(calc_ema(closes_5m, 20), 4),
+            "rsi": round(calc_rsi(closes_5m, 14), 1),
+            "last_4_candles": [
+                {"t": x["datetime"], "o": x["open"], "h": x["high"], "l": x["low"], "c": x["close"]}
+                for x in c_5m[-4:]
+            ],
+        }
+    return result
 
-    logs = evaluate_past_trades(logs, m15_map)
 
-    # 4. ゴールド最優先精密レポート構築
-    gold_section = "【XAU/USD データ取得エラー】"
-    if (
-        "XAU/USD" in h1_map
-        and df_gold_4h is not None
-        and df_gold_15m is not None
-        and df_gold_5m is not None
-    ):
-        g4 = analyze_dataframe(df_gold_4h, pa_bars=3)
-        g1 = analyze_dataframe(h1_map["XAU/USD"], pa_bars=3)
-        g15 = analyze_dataframe(df_gold_15m, pa_bars=4)
-        g5 = analyze_dataframe(df_gold_5m, pa_bars=5)
+# ==============================================================================
+# 3. 最新ニュース・週末アナリスト見解・経済指標取得
+# ==============================================================================
+def fetch_google_news(queries, limit_per_query=4):
+    headlines = []
+    for q in queries:
+        url = f"https://news.google.com/rss/search?q={urllib.parse.quote(q)}&hl=ja&gl=JP&ceid=JP:ja"
+        try:
+            req = urllib.request.urlopen(url, timeout=10)
+            xml_data = req.read()
+            root = ET.fromstring(xml_data)
+            items = root.findall(".//item")[:limit_per_query]
+            for item in items:
+                title = item.findtext("title", "")
+                pub_date = item.findtext("pubDate", "")
+                headlines.append(f"- {title} ({pub_date})")
+        except Exception as e:
+            print(f"[News Error] {q}: {e}")
+    return "\n".join(headlines) if headlines else "最新ニュース取得なし"
 
-        cur = g5["close"]
-        atr15 = g15["atr14"]
-        max_pullback = round(atr15 * 0.45, 2)
-        min_sl_dist = round(atr15 * 1.30, 2)
-        usd_blocked = (
-            "⚠️現在USD重要指標前後45分ロック中（新規即エントリー禁止）"
-            if "USD" in blocked_currencies
-            else "指標ロックなし"
-        )
 
-        # ハイブリッド注文推奨モードの自動判定
-        if g1["adx14"] >= 25.0 and g1["trend"] == g15["trend"] and g1["trend"] != "RANGE":
-            exec_mode = "【強トレンド・ブレイク初動モード】成行（現在値付近）での即エントリーを優先推奨"
+def fetch_economic_calendar():
+    url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+    try:
+        req = urllib.request.urlopen(url, timeout=10)
+        events = json.loads(req.read().decode("utf-8"))
+        high_events = []
+        for ev in events:
+            if ev.get("impact") in ["High", "Medium"] and ev.get("country") in ["USD", "JPY", "EUR", "GBP", "AUD"]:
+                high_events.append(
+                    f"- [{ev.get('country')}] {ev.get('title')} | 日時(UTC): {ev.get('date')} | 重要度: {ev.get('impact')} | 予想: {ev.get('forecast')} / 前回: {ev.get('previous')}"
+                )
+        return "\n".join(high_events[:20]) if high_events else "直近の主要指標情報なし"
+    except Exception as e:
+        return f"指標カレンダー取得エラー: {e}"
+
+
+# ==============================================================================
+# 4. 市場オープン・土日判定
+# ==============================================================================
+def is_weekend_closed(now_jst):
+    wd = now_jst.weekday()  # 0:月 〜 4:金, 5:土, 6:日
+    hr = now_jst.hour
+    # 土曜 07:00 〜 月曜 06:59 を土日休場とみなす
+    if wd == 5 and hr >= 7:
+        return True
+    if wd == 6:
+        return True
+    if wd == 0 and hr < 7:
+        return True
+    return False
+
+
+# ==============================================================================
+# 5. 決着（TP/SL到達）チェック ＆ 5分類タグ敗因解剖・自己進化
+# ==============================================================================
+def check_positions_and_evolve(trade_log, evolution_data, latest_prices, news_summary):
+    open_positions = trade_log.get("open_positions", [])
+    closed_history = trade_log.get("closed_history", [])
+    still_open = []
+    newly_closed = []
+
+    for pos in open_positions:
+        sym = pos["symbol"]
+        cur = latest_prices.get(sym)
+        if cur is None:
+            still_open.append(pos)
+            continue
+
+        direction = pos["direction"]
+        tp = float(pos["tp"])
+        sl = float(pos["sl"])
+        entry = float(pos["entry_price"])
+
+        result = None
+        close_price = cur
+
+        # 利確・損切りライン到達のみで取引終了判定
+        if direction == "BUY":
+            if cur >= tp:
+                result = "WIN"
+                close_price = tp
+            elif cur <= sl:
+                result = "LOSS"
+                close_price = sl
+        elif direction == "SELL":
+            if cur <= tp:
+                result = "WIN"
+                close_price = tp
+            elif cur >= sl:
+                result = "LOSS"
+                close_price = sl
+
+        if result:
+            pnl = (close_price - entry) if direction == "BUY" else (entry - close_price)
+            pos["status"] = "CLOSED"
+            pos["result"] = result
+            pos["close_price"] = round(close_price, 4)
+            pos["pnl"] = round(pnl, 4)
+            pos["closed_at"] = NOW_JST.strftime("%Y-%m-%d %H:%M JST")
+            newly_closed.append(pos)
+            closed_history.append(pos)
         else:
-            exec_mode = f"【押し目・戻り目モード】現在値から ±{max_pullback:.2f} ドル以内の浅い指値（Limit）またはライン到達待ち推奨"
+            # 含み損益・TP/SLまでの残り距離を更新
+            unrealized = (cur - entry) if direction == "BUY" else (entry - cur)
+            pos["current_price"] = round(cur, 4)
+            pos["unrealized_pnl"] = round(unrealized, 4)
+            pos["dist_to_tp"] = round(abs(tp - cur), 4)
+            pos["dist_to_sl"] = round(abs(cur - sl), 4)
+            still_open.append(pos)
 
-        gold_section = f"""
-★★★【最優先VIP銘柄：XAU/USD（ゴールド）4重時間足＋マクロ環境解析】★★★
-・現在値: {cur:.2f} | 指標状態: {usd_blocked}
-・推奨執行モード: {exec_mode}
-・米ドル相関環境: {usd_strength_text}
-・ブレイク接近状況(1H): {g1['near_breakout']}
-・許容指値幅（未約定防止）: 現在値から ±{max_pullback:.2f} ドル以内
-・最低損切り幅（ヒゲ狩り防止）: {min_sl_dist:.2f} ドル以上（1.3×ATR14基準）
-・目標利確幅（損小利大）: 損切り幅の 2.2倍〜3.2倍以上
+    trade_log["open_positions"] = still_open
+    trade_log["closed_history"] = closed_history
 
-[4時間足(4H)] トレンド:{g4['trend']} | EMA20:{g4['ema20']:.2f} | EMA50:{g4['ema50']:.2f} | RSI14:{g4['rsi14']:.1f} | ADX14:{g4['adx14']:.1f} | 24本高値:{g4['swing_high']:.2f} / 安値:{g4['swing_low']:.2f}
-[1時間足(1H)] トレンド:{g1['trend']} | EMA20:{g1['ema20']:.2f} | EMA50:{g1['ema50']:.2f} | RSI14:{g1['rsi14']:.1f} | ADX14:{g1['adx14']:.1f} | BB上限:{g1['bb_upper']:.2f} / 下限:{g1['bb_lower']:.2f}
-[15分足(15M)] トレンド:{g15['trend']} | EMA20:{g15['ema20']:.2f} | RSI14:{g15['rsi14']:.1f} | ATR14:{atr15:.2f} | 24本高値:{g15['swing_high']:.2f} / 安値:{g15['swing_low']:.2f}
-  15M直近プライスアクション:
-    {g15['pa_text']}
-[5分足(5M) エントリートリガー] トレンド:{g5['trend']} | EMA20:{g5['ema20']:.2f} | RSI14:{g5['rsi14']:.1f}
-  5M直近5本プライスアクション:
-    {g5['pa_text']}
-"""
+    # 連敗カウント再計算
+    consecutive_losses = 0
+    for item in reversed(closed_history):
+        if item.get("result") == "LOSS":
+            consecutive_losses += 1
+        else:
+            break
+    evolution_data["consecutive_losses"] = consecutive_losses
+    evolution_data["strict_mode"] = True if consecutive_losses >= 2 else False
 
-    sub_sections = []
-    for _, meta, ind_1h in top_subs:
-        sym = meta["symbol"]
-        ind_4h = sub_h4_map.get(sym)
-        df_15 = m15_map.get(sym)
-        if not ind_4h or df_15 is None:
-            continue
-        # 4Hが逆行トレンドでなければ許可（RANGEはブレイク初動として許可）
-        if (ind_1h["trend"] == "UP" and ind_4h["trend"] == "DOWN") or (
-            ind_1h["trend"] == "DOWN" and ind_4h["trend"] == "UP"
-        ):
-            continue
-        ind_15m = analyze_dataframe(df_15, pa_bars=3)
-        d = meta["digits"]
-        atr = ind_15m["atr14"]
-        mode_str = "成行優先(ADX25超)" if ind_1h["adx14"] >= 25.0 else f"浅い指値(±{atr*0.45:.{d}f}以内)"
-        sub_sections.append(
-            f"【サブ候補：{sym}（{meta['name']}）】現在値: {ind_15m['close']:.{d}f} | 1H:{ind_1h['trend']} / 4H:{ind_4h['trend']} | ADX:{ind_1h['adx14']:.1f} | モード:{mode_str} | 最低SL幅:{atr * 1.2:.{d}f} | 接近:{ind_1h['near_breakout']}\n"
-            f"  4H_EMA20:{ind_4h['ema20']:.{d}f}, RSI:{ind_4h['rsi14']:.1f} | 1H_EMA20:{ind_1h['ema20']:.{d}f}, RSI:{ind_1h['rsi14']:.1f} | 15M_RSI:{ind_15m['rsi14']:.1f}"
-        )
+    # 決着したトレードがあれば5分類タグ解剖＆ルール進化を実行
+    evolution_reports = []
+    for closed_pos in newly_closed:
+        evo_prompt = f"""
+あなたは自己進化型AIトレーディングシステムの「戦績解剖・ルール改善エンジン」です。
+たった今、以下の仮想トレードが利確（TP）または損切り（SL）に到達して取引終了（決着）となりました。
+このトレードの結果（特に損切りの場合の敗因）を冷徹かつ論理的に解剖し、次回以降のトレード精度を高めるための「進化ルール」を更新してください。
 
-    learning_text = build_learning_feedback(logs)
+================================================================
+【BLOCK 1：決着したトレードの事実データ】
+================================================================
+- 銘柄：{closed_pos['symbol']}
+- 時間軸区分：{closed_pos.get('timeframe_type', '短期デイトレ（1〜3時間・浅い指値）')}
+- 売買方向：{closed_pos['direction']}
+- エントリー価格 → 決着価格：{closed_pos['entry_price']} → {closed_pos['close_price']}
+- 決着結果：{closed_pos['result']}（WIN：利確到達 / LOSS：損切り到達）
+- 獲得・損失値幅：{closed_pos['pnl']}
+- エントリー日時：{closed_pos.get('opened_at')} → 決着日時：{closed_pos.get('closed_at')}
+- エントリー時の根拠メモ：{closed_pos.get('reason', '')}
+- 直近ニュース背景：{news_summary}
+- 現在の進化ルール帳（更新前）：{json.dumps(evolution_data, ensure_ascii=False)}
+- 現在の連敗カウント：{consecutive_losses}
 
-    prompt = f"""
-現在時刻: {current_time.strftime('%Y-%m-%d %H:%M')} JST
-{learning_text}
+================================================================
+【BLOCK 2：敗因の5分類タグ特定ルール（LOSS確定時は必須）】
+================================================================
+結果が「LOSS（損切り到達）」だった場合、必ず以下の5つの敗因タグの中から最も当てはまる【主因タグ】を1つ特定し、具体的な発生メカニズムを分析してください。
 
-【最新の世界情勢・地政学・FRBニュース見出し（ファンダメンタルズ）】
-{world_news_text}
+- TAG_1【上位足逆行・壁衝突】：1時間足などの上位トレンドに逆らっていた、または直近高値・安値・キリのいい節目（壁）のすぐ手前でエントリーして跳ね返された。
+- TAG_2【指標・急変ニュース・ドル急変】：経済指標の発表、要人発言・地政学ヘッドライン、または米ドルの急激な方向転換に巻き込まれた。
+- TAG_3【指値刺さり遅れ・鮮度切れ】：浅い指値を置いた後、45〜60分近く経って相場環境が変わってから遅れて約定し、不利な位置で捕まった。
+- TAG_4【SL狭すぎ・ヒゲ狩り】：方向性の見立て自体は合っていたが、損切り（SL）幅がATRや直近ノイズに対して狭すぎたため、一時的なヒゲで刈られた後に本来の方向へ伸びた。
+- TAG_5【レンジのダマシブレイク】：方向感のないレンジ相場の端でブレイクや押し目と誤認して飛び乗り、レンジ内へ引き戻された。
 
-【直近の重要経済指標】
-{calendar_text}
+================================================================
+【BLOCK 3：ルール自動進化・書き換え方針】
+================================================================
+1. 勝った場合（WIN）：どの要素が勝因になったかを抽出し、「勝ちパターン」として強化・記録すること。
+2. 負けた場合（LOSS）：特定した5分類タグの累計傾向を確認し、次回からそれを防ぐ具体的な改善ルールを1〜2文で生成して進化ルール帳に反映すること。
+3. 探索バランス維持（引き締めすぎ防止）：「チャンスを逃さない広め設定」を土台にしつつ、「明らかに負ける罠だけを避けるフィルター」へ洗練させること。
 
-{gold_section}
-
-【サブ監視銘柄（ADX20以上＆上位足逆行なし）】
-{chr(10).join(sub_sections) if sub_sections else "現在サブ銘柄に強いトレンドなし"}
-
-あなたは世界最高峰のヘッジファンドのチーフストラテジストです。
-以下の「ハイブリッド・ブレイク＆押し目戦略」と「2段階アラート基準」に基づき、最も信頼できるトレード判断を行ってください。
-
-【判定ランク（alert_type）の定義】
-1. **"NOW"（🔥即エントリー・A級チャンス）**：
-   ・1Hと15Mの方向が一致し、4Hが逆行しておらず、世界情勢・ドル強弱とも矛盾がない状態。
-   ・ADX >= 25 の強い勢いがある時は「成行買い / 成行売り（現在値付近）」で即エントリーを指示し、取り逃がしを防ぐこと。
-   ・ADX 20〜24 の時は現在値から許容指値幅（0.45×ATR）以内の浅い押し目・戻り目（Buy Limit / Sell Limit）を指示すること。
-2. **"APPROACHING"（👀接近中・待機アラート・B級チャンス）**：
-   ・今すぐ成行で入るにはあと一歩だが、重要ライン（スイング高値安値やEMA20押し目）まであと数ドル（数pips）に迫っており、次の30〜60分以内にエントリー条件が整いそうな状態。
-   ・「〇〇円を上抜けたら成行買い」「〇〇円まで引きつけて反発したら買い」という具体的な監視トリガー価格と、その場合のTP・SLを提示すること。
-3. どちらにも当てはまらないレンジ・方向感なし・指標ロック中の場合は、無理に出力せず空配列 `[]` を返すこと。
-
-【絶対遵守ルール（損小利大＆ヒゲ狩り防止）】
-・SLは必ず「最低損切り幅（ゴールドは1.3×ATR、他は1.2×ATR）以上」離し、サポレジの外側に置くこと。
-・TPはSL幅の **必ず2.2倍〜3.2倍** に設定すること。
-
-JSON形式のみで出力してください（最大2銘柄まで、XAU/USD最優先）：
+================================================================
+【BLOCK 4：出力フォーマット（必ず純粋なJSONのみ出力）】
+================================================================
 {{
-  "alerts": [
-    {{
-      "alert_type": "NOW",
-      "symbol": "XAU/USD",
-      "direction": "BUY",
-      "order_type": "成行買い（または Buy Limit）",
-      "entry": 2650.50,
-      "tp": 2670.00,
-      "sl": 2642.00,
-      "rr": "1 : 2.3",
-      "trigger_note": "現在値付近で即エントリー可能",
-      "reason": "1H/15M上昇一致＋ADX26の強い初動。米ドル安と地政学ニュースも買いを後押ししており、成行で初動を捉える。"
-    }}
-  ]
+  "win_or_loss": "{closed_pos['result']}",
+  "primary_failure_tag": "LOSSの場合は TAG_1〜TAG_5 のいずれか（WINの場合は NONE）",
+  "analysis_summary": "なぜ勝てたか／なぜ負けたかの詳しい解剖コメント",
+  "new_or_updated_rule": "次回以降のトレード判断プロンプトへ反映する具体的な改善ルール",
+  "gold_short_rules": ["更新後のGOLD短期ルールリスト（最大6個）"],
+  "gold_long_rules": ["更新後のGOLD超厳選長期ルールリスト（最大4個）"],
+  "fx_pairs_rules": ["更新後のサブ6通貨ペア共通ルールリスト（最大6個）"]
 }}
 """
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    response = None
-    for model_name in [
-        "gemini-2.5-pro",
-        "gemini-3-pro-preview",
-        "gemini-2.5-flash",
-        "gemini-3.5-flash-lite",
-    ]:
         try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1,
-                ),
+            model = genai.GenerativeModel(MODEL_NAME)
+            resp = model.generate_content(evo_prompt)
+            raw = resp.text.strip().replace("```json", "").replace("```", "").strip()
+            parsed = json.loads(raw)
+
+            tag = parsed.get("primary_failure_tag", "NONE")
+            if tag in evolution_data.get("tag_counts", {}):
+                evolution_data["tag_counts"][tag] += 1
+
+            evolution_data["gold_short_rules"] = parsed.get("gold_short_rules", evolution_data.get("gold_short_rules", []))
+            evolution_data["gold_long_rules"] = parsed.get("gold_long_rules", evolution_data.get("gold_long_rules", []))
+            evolution_data["fx_pairs_rules"] = parsed.get("fx_pairs_rules", evolution_data.get("fx_pairs_rules", []))
+            evolution_data["last_evolution_note"] = parsed.get("new_or_updated_rule", "")
+
+            closed_pos["failure_tag"] = tag
+            closed_pos["post_analysis"] = parsed.get("analysis_summary", "")
+
+            evolution_reports.append(
+                f"📌【決着＆自己進化】{closed_pos['symbol']} ({closed_pos['direction']}) → {closed_pos['result']} ({closed_pos['pnl']:+})\n"
+                f"・分類タグ: {tag}\n"
+                f"・解剖: {parsed.get('analysis_summary')}\n"
+                f"・新ルール反映: {parsed.get('new_or_updated_rule')}"
             )
-            print(f"使用モデル: {model_name}")
-            break
         except Exception as e:
-            print(f"モデル {model_name} スキップ: {e}")
+            print(f"[Evolution Parse Error] {e}")
 
-    if response is None:
-        print("利用可能なGeminiモデルが見つかりませんでした")
-        save_logs(logs)
+    save_json(TRADE_LOG_FILE, trade_log)
+    save_json(EVOLUTION_FILE, evolution_data)
+    return evolution_reports
+
+
+# ==============================================================================
+# 6. LINE プッシュ通知送信
+# ==============================================================================
+def send_line_message(text):
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
+        print("[LINE Skip] トークンまたはUSER_ID未設定\n", text)
+        return
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+    }
+    # LINEの文字数上限(5000文字)対策で分割送信
+    chunks = [text[i:i + 4500] for i in range(0, len(text), 4500)]
+    for chunk in chunks:
+        payload = json.dumps({
+            "to": LINE_USER_ID,
+            "messages": [{"type": "text", "text": chunk}],
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        try:
+            urllib.request.urlopen(req, timeout=15)
+        except Exception as e:
+            print(f"[LINE Push Error] {e}")
+
+
+# ==============================================================================
+# 7. 土日専用：週末集中学習＆来週の作戦レポート実行
+# ==============================================================================
+def run_weekend_study_mode(trade_log, evolution_data):
+    # 土日は3時間に1回裏側で知識更新し、日曜夜21時台にLINEへレポート配信
+    hr = NOW_JST.hour
+    wd = NOW_JST.weekday()  # 5:土, 6:日
+    if hr % 3 != 0:
+        print(f"[Weekend] {NOW_JST.strftime('%H:%M')} は週末待機スロットのためスキップ")
         return
 
-    try:
-        result = json.loads(response.text)
-        alerts = result.get("alerts", [])
-    except Exception as e:
-        print("JSONパースエラー:", e)
-        save_logs(logs)
-        return
+    analyst_news = fetch_google_news(
+        ["ドル円 来週 見通し FX", "ゴールド 金相場 来週 予想", "FRB 金利 見通し 週間", "XAUUSD weekly outlook"],
+        limit_per_query=4,
+    )
+    calendar_data = fetch_economic_calendar()
 
-    if not alerts:
-        print("即エントリー・接近アラートとも該当なし（サイレント見送り）")
-        save_logs(logs)
-        return
+    weekend_prompt = f"""
+あなたは週末集中学習モードで稼働中の「自己進化型AIトレーディング研究官」です。
+現在、外国為替（FX）およびゴールド（XAU/USD）市場は土日休場中のため、新規の売買シグナルは出しません。
+その代わり、この休場時間を使って「①過去の全トレードデータの徹底振り返り」と「②外部のトレーダー・アナリスト見解および来週の市場テーマの学習」を行い、月曜朝7時の市場オープンに向けた知識と戦略をアップデートしてください。
 
-    msg_blocks = [
-        f"⚡ ゴールド最優先・2段階トレードアラート\n（{current_time.strftime('%m/%d %H:%M')} JST）\n"
-    ]
-    for al in alerts:
-        sym = al["symbol"]
-        dir_jp = "買い（BUY）" if al["direction"] == "BUY" else "売り（SELL）"
-        is_now = al.get("alert_type") == "NOW"
-        status_badge = "🔥【即エントリー（A級）】" if is_now else "👀【接近中・待機アラート（B級）】"
-        sym_badge = "👑XAU/USD" if sym == "XAU/USD" else f"🎯{sym}"
+================================================================
+【BLOCK 1：週末学習用の入力データ】
+================================================================
+- 学習実行日時（日本時間）：{NOW_JST.strftime('%Y-%m-%d %H:%M JST')}
+- 累計の全件約定トレード履歴：{json.dumps(trade_log.get('closed_history', [])[-30:], ensure_ascii=False)}
+- 5分類敗因タグの累計データと現在の進化ルール帳：{json.dumps(evolution_data, ensure_ascii=False)}
+- 土日に収集した国内外FXアナリスト・トレーダー見解・週間見通しニュース：
+{analyst_news}
+- 来週の重要経済指標カレンダー：
+{calendar_data}
+- 金曜クローズ時点の持ち越しポジション：{json.dumps(trade_log.get('open_positions', []), ensure_ascii=False)}
 
-        block = (
-            f"━━━━━━━━━━━━━━━━\n"
-            f"{status_badge}\n"
-            f"{sym_badge}｜{dir_jp}\n"
-            f"・注文方法：{al.get('order_type', al['direction'])}\n"
-            f"・基準価格：{al['entry']}\n"
-            f"・利確（TP）：{al['tp']}\n"
-            f"・損切り（SL）：{al['sl']}\n"
-            f"・RR比：{al.get('rr', '1 : 2.2')}\n"
-            f"・発動条件：{al.get('trigger_note', '')}\n"
-            f"・統合根拠：{al['reason']}"
-        )
-        msg_blocks.append(block)
+================================================================
+【BLOCK 2：週末に実行すべき3つの深掘り学習タスク】
+================================================================
+1. 【内部データ解剖】今週・過去の勝ちパターンと負けパターンの総点検：
+   - 銘柄別（GOLD vs サブ6通貨）、短期 vs 長期ごとの勝率と損益傾向を分析する。
+   - 5分類敗因タグ（TAG_1〜TAG_5）のうち、最も損失の原因になっている弱点を特定し、来週から適用する「具体的な改善ルール」をアップグレードする。
+2. 【外部知識の吸収】プロトレーダー・市場参加者の目線の言語化：
+   - 収集した週間見通しやアナリスト意見から、「来週、世界中のトレーダーが最も意識している価格帯（サポート・レジスタンス・心理的節目）」と「市場のメインテーマ（FRB金利観測、インフレ指標、地政学リスク、日銀動向など）」を抽出して知識ベースに整理する。
+3. 【持ち越しポジション＆月曜窓開け対策】：
+   - 金曜から持ち越している保有ポジションがある場合、週末のニュースを踏まえた月曜朝のリスクと対応方針を整理する。
 
-        # 「NOW（即エントリー）」のみ仮想トレード戦績ログに記録して採点対象にする
-        if is_now:
-            logs.append(
-                {
-                    "timestamp": current_time.strftime("%Y-%m-%d %H:%M"),
-                    "symbol": sym,
-                    "direction": al["direction"],
-                    "entry": float(al["entry"]),
-                    "tp": float(al["tp"]),
-                    "sl": float(al["sl"]),
-                    "reason": al.get("reason", ""),
-                    "status": "OPEN" if "成行" in al.get("order_type", "") else "PENDING",
-                    "pnl": 0.0,
-                }
-            )
+================================================================
+【BLOCK 3：出力フォーマット】
+================================================================
+最初に必ず `===EVOLUTION_JSON_START===` と `===EVOLUTION_JSON_END===` で囲んで更新後の進化ルールJSONを出力し、その後にLINE送信用の「📚 週末の集中学習＆来週の作戦レポート」を詳しく書いてください。
 
-    send_line_message("\n".join(msg_blocks))
-    save_logs(logs)
-    print(f"アラート {len(alerts)}件 をLINE通知しました。")
+===EVOLUTION_JSON_START===
+{{
+  "weekend_market_outlook": "来週の相場テーマ・トレーダー意識価格帯の要約（来週の判断プロンプトへ自動注入される知識メモ）",
+  "gold_short_rules": ["更新後のGOLD短期ルールリスト"],
+  "gold_long_rules": ["更新後のGOLD超厳選長期ルールリスト"],
+  "fx_pairs_rules": ["更新後のサブ6通貨ペア共通ルールリスト"]
+}}
+===EVOLUTION_JSON_END===
+
+### 📚 週末の集中学習＆来週の作戦レポート
+
+**1. 今週のトレード振り返り＆自己進化アップデート**
+（累計成績サマリー、機能した勝ちパターン、5分類敗因タグの弱点分析と来週の新ルールを詳しく記載）
+
+**2. 外部トレーダー見解＆来週の市場メインテーマ**
+（アナリスト・トレーダーが注目している焦点と意識されている価格帯・節目マップを詳しく記載）
+
+**3. 👑 来週のGOLD（XAU/USD）の狙い方（短期メイン ＋ 超厳選長期の目線）**
+（持ち越しポジション対応、月曜朝7時〜来週前半の短期1〜3H・浅い指値戦略、超厳選長期スイング条件を詳しく記載）
+
+**4. 🎯 来週のサブ6通貨ペアの注目銘柄と戦略**
+（相関ダブりを避けた来週の最注目通貨ペアと具体的な狙い目を詳しく記載）
+"""
+    model = genai.GenerativeModel(MODEL_NAME)
+    resp = model.generate_content(weekend_prompt)
+    full_text = resp.text.strip()
+
+    report_text = full_text
+    if "===EVOLUTION_JSON_START===" in full_text and "===EVOLUTION_JSON_END===" in full_text:
+        json_part = full_text.split("===EVOLUTION_JSON_START===")[1].split("===EVOLUTION_JSON_END===")[0].strip()
+        report_text = full_text.split("===EVOLUTION_JSON_END===")[1].strip()
+        try:
+            parsed_evo = json.loads(json_part)
+            evolution_data["weekend_market_outlook"] = parsed_evo.get("weekend_market_outlook", "")
+            evolution_data["gold_short_rules"] = parsed_evo.get("gold_short_rules", evolution_data.get("gold_short_rules", []))
+            evolution_data["gold_long_rules"] = parsed_evo.get("gold_long_rules", evolution_data.get("gold_long_rules", []))
+            evolution_data["fx_pairs_rules"] = parsed_evo.get("fx_pairs_rules", evolution_data.get("fx_pairs_rules", []))
+            evolution_data["last_weekend_study"] = NOW_JST.strftime("%Y-%m-%d %H:%M JST")
+            save_json(EVOLUTION_FILE, evolution_data)
+        except Exception as e:
+            print(f"[Weekend JSON Parse Error] {e}")
+
+    # 日曜夜21時台（または土曜朝9時台）にLINEへ学習レポートを配信
+    if (wd == 6 and hr == 21) or (wd == 5 and hr == 9):
+        send_line_message(report_text)
+    else:
+        print("[Weekend] 知識アップデート完了（LINE配信時間外のため保存のみ）")
 
 
+# ==============================================================================
+# 8. 平日メイン分析（1時間ごとの自動通知・全件約定記録）
+# ==============================================================================
+def run_weekday_analysis(trade_log, evolution_data):
+    gold_data = analyze_symbol_market(GOLD_SYMBOL, is_vip=True)
+    fx_data_list = [analyze_symbol_market(sym, is_vip=False) for sym in SUB_PAIRS]
+
+    latest_prices = {}
+    if "current_price" in gold_data:
+        latest_prices[GOLD_SYMBOL] = gold_data["current_price"]
+    for item in fx_data_list:
+        if "current_price" in item:
+            latest_prices[item["symbol"]] = item["current_price"]
+
+    news_headlines = fetch_google_news(
+        ["ゴールド 金価格 相場", "ドル円 為替 FRB", "XAUUSD gold price news", "米国債 金利 地政学"],
+        limit_per_query=3,
+    )
+    calendar_data = fetch_economic_calendar()
+
+    # 1. まず保有ポジションのTP/SL到達チェック＆5分類敗因学習を実行
+    evo_reports = check_positions_and_evolve(trade_log, evolution_data, latest_prices, news_headlines)
+
+    # 2. 戦績サマリー計算
+    closed = trade_log.get("closed_history", [])
+    wins = sum(1 for x in closed if x.get("result") == "WIN")
+    losses = sum(1 for x in closed if x.get("result") == "LOSS")
+    win_rate = round((wins / len(closed)) * 100, 1) if closed else 0.0
+
+    stats_block = {
+        "total_trades": len(closed),
+        "wins": wins,
+        "losses": losses,
+        "win_rate_percent": win_rate,
+        "consecutive_losses": evolution_data.get("consecutive_losses", 0),
+        "strict_mode_active": evolution_data.get("strict_mode", False),
+        "evolution_rules": evolution_data,
+    }
+
+    # 3. メイン分析プロンプト（1時間通知 ＆「今は？」完全共通仕様）
+    main_prompt = f"""
+あなたはプロ機関投資家レベルの専属FX・ゴールド（XAU/USD）ディーラー兼AIアナリストです。
+ユーザーはあなたの提示したトレード判断を信頼して実戦の参考にします。表面的な一言コメントは厳禁とし、チャート構造・世界情勢・米ドル強弱・価格設定の理由・過去の学習ルールまで、根拠を具体的かつ詳しく言語化して回答してください。
+
+================================================================
+【BLOCK 1：監視対象と分離出力の絶対ルール】
+================================================================
+1. 最優先VIP銘柄は「XAU/USD（ゴールド）」とする。
+2. サブ監視銘柄は「USD/JPY, EUR/USD, GBP/JPY, GBP/USD, EUR/JPY, AUD/USD」の主要6通貨ペアとする。
+3. 回答は必ず「👑 1. GOLD（XAU/USD）の取引判断」と「🎯 2. それ以外（サブ6通貨ペア）の取引判断」の2大セクションに完全に分けて出力すること。両者を混ぜてはならない。
+4. サブ6通貨ペアの相関ダブり防止ルール：
+   - サブ6通貨ペアから新規エントリーを提示する場合は、通貨強弱の重複（実質同じ賭けになる二重リスク）を厳禁とし、最も期待値と優位性が高い「最良の1銘柄だけ」に厳選すること。優位な場面がなければ無理に出さず「見送り（様子見）」と明記すること。
+
+================================================================
+【BLOCK 2：時間軸・注文スタイル・決着基準のルール】
+================================================================
+1. 基本スタイル（メイン戦略）：
+   - 「短期デイトレ（1〜3時間程度で決着を狙う値幅）」かつ「浅い指値注文（現在値から引きつけた押し目買い・戻り売り）」を基本軸とする。
+2. 浅い指値の鮮度ルール（45〜60分制限）：
+   - 提示する浅い指値は「提示から45〜60分以内に約定しなければ鮮度切れ（無効・キャンセル）」とする前提で設計すること。
+3. 超厳選の長期（スイング）枠：
+   - 長期トレードは損切り幅が大きくなるため、普段は提示しない。
+   - ただし、「4時間足・日足レベルの大局トレンド」「最新の世界情勢・FRB金利観測」「米ドルの強弱」の3つが完全に同じ方向へ揃い、勝率・優位性が極めて高いと判断できる特選場面に限り、短期枠とは別に「【超厳選・長期スイング枠】」としてしっかり提示すること。
+4. 取引終了（決着）の基準：
+   - 時間が経過しただけの曖昧な途中決済は行わない。提示した利確（TP）または損切り（SL）の価格ラインに到達した時点を「取引終了（WIN / LOSS確定）」とする。
+
+================================================================
+【BLOCK 3：仕掛けの姿勢・安全装置・自己進化ルール】
+================================================================
+1. 探索と進化の基本姿勢：
+   - 初期および通常時は「チャンスを逃さない広めの基準」で積極的に優位な場面を探し出すこと。
+   - 過去の全件約定データから得られた勝ちパターン・負けパターン（5分類敗因タグ学習済みルール）を常に参照し、過去に負けた状況と同じ罠にはまらないよう条件を洗練させて判断すること。
+2. 目の前の壁（サポレジ・節目）チェック：
+   - 買いエントリーのすぐ上に強いレジスタンスの壁がある場合、または売りエントリーのすぐ下に強いサポートの壁がある場合、TPに届く前に跳ね返されるリスクが高いため「見送り」とするか、「壁の手前に現実的なTPを設定する」こと。
+3. 2連敗時の自動厳格化ブレーキ：
+   - `strict_mode_active` が `true`（直近2連敗）の場合は、「チャンスを逃さない広め設定」を一時解除し、1H・15M・5M・壁までの距離・ドル強弱のすべてが綺麗に揃った「A級チャンスのみ」に基準を厳格化して提示すること。
+
+================================================================
+【BLOCK 4：リアルタイム入力データ】
+================================================================
+- 現在日時（日本時間）：{NOW_JST.strftime('%Y-%m-%d %H:%M JST')}
+- XAU/USD 最新チャート指標：{json.dumps(gold_data, ensure_ascii=False)}
+- サブ6通貨ペア 最新チャート指標：{json.dumps(fx_data_list, ensure_ascii=False)}
+- 最新の世界情勢・FRB・地政学ニュースヘッドライン：
+{news_headlines}
+- 重要経済指標カレンダー：
+{calendar_data}
+- 現在のAI保有中ポジション一覧（全件約定扱い）：{json.dumps(trade_log.get('open_positions', []), ensure_ascii=False)}
+- 累計戦績＆5分類敗因タグ学習済み進化ルール＆週末学習メモ：{json.dumps(stats_block, ensure_ascii=False)}
+
+================================================================
+【BLOCK 5：出力フォーマット（システム登録用JSON ＋ LINE配信テキスト）】
+================================================================
+最初に必ず `===SIGNALS_JSON_START===` と `===SIGNALS_JSON_END===` で囲んで、今回「新規エントリー推奨」としたシグナルだけをJSON配列で出力してください（見送り・待機のみの場合は空配列 `[]`）。
+全件約定ルールに基づき、ここに含めた新規シグナルは自動的に仮想保有ポジションへ登録されます（同銘柄・同方向の重複登録は避けること）。
+
+===SIGNALS_JSON_START===
+[
+  {{
+    "symbol": "XAU/USD または サブ最良1銘柄",
+    "timeframe_type": "短期デイトレ（1〜3時間・浅い指値） または 超厳選長期スイング",
+    "direction": "BUY または SELL",
+    "entry_price": 0.0,
+    "tp": 0.0,
+    "sl": 0.0,
+    "reason": "エントリー根拠要約"
+  }}
+]
+===SIGNALS_JSON_END===
+
+続いて、LINEへそのまま送信するユーザー向けレポートを以下の構成で詳しく出力してください。
+
+### 👑 1. GOLD（XAU/USD）の取引判断
+
+**① 現在の保有ポジション状況（AI仮想約定ベース）**
+※保有中がある場合：売買方向、買った値段 → 今の値段、現在の損益（利益／損）、利確（TP）・損切り（SL）までの残り距離、保有継続・撤退アドバイスを明記。なければ「現在、GOLDの保有中ポジションはありません。」と記載。
+
+**② 今の相場状況（詳しい分析）**
+- 【チャート構造（1H・15M・5M）】トレンド方向、押し目/戻り目、直近高値・安値・節目（壁）との距離を詳しく解説。
+- 【世界情勢・米ドル強弱・指標】最新ニュースやFRB金利観測、ドル強弱がGOLDに追い風か逆風か、重要指標の接近有無を詳しく解説。
+- 【学習ルール・安全装置の状態】過去の5分類敗因学習から今回特に警戒している点、2連敗ブレーキの作動有無を明記。
+
+**③ 次の一手・新規取引の具体策（未保有・乗り遅れ向け対応）**
+- 【短期デイトレ（1〜3時間完結・浅い指値メイン）】
+  - 判断アクション：『新規指値エントリー推奨』 / 『押し目・戻り目待機』 / 『見送り（静観）』を明記。
+  - すでに保有中の場合でも、「約定に乗れていない人が今から新規で取引するならどうすべきか」を必ず提示すること。
+  - 価格がすでに伸びきっていて今から入ると高値掴み・安値掴みになる場合は、「今は飛び乗らず、〇〇.〇〇ドルまでの押し目（戻り目）を待つべき」と明確な待機ラインを示すこと。
+  - エントリー目安（浅い指値・有効期限45〜60分）：〇〇.〇〇 ／ 利確（TP）：〇〇.〇〇 ／ 損切り（SL）：〇〇.〇〇
+  - 詳しい判断根拠：なぜこの方向・この価格設定なのかを論理的に詳述。
+- 【超厳選・長期スイング枠】（該当する高確度時のみ詳細を記載。該当しない場合は「現在、超厳選の長期枠に該当する高確度セットアップはありません」と記載）
+
+---
+### 🎯 2. それ以外（サブ6通貨ペア）の取引判断
+
+**① 現在の保有ポジション状況（AI仮想約定ベース）**
+※保有中がある場合：銘柄名、売買方向、買った値段 → 今の値段、現在の損益、TP・SLまでの残り距離を記載。なければ「現在、サブ6通貨ペアの保有中ポジションはありません。」と記載。
+
+**② 今の相場状況＆次の一手（相関ダブり防止・最良1銘柄厳選）**
+- サブ6通貨ペア全体の地合いを解説し、優位なチャンスがあれば相関ダブりを避けた**最良の1銘柄だけ**について短期（1〜3時間・浅い指値・鮮度45〜60分）のエントリー・TP・SL・壁チェック・詳しい判断根拠（乗り遅れ向け対応含む）を記載。なければ「現在、サブ6通貨ペアに無理に入るべき優位な場面はありません（様子見）」とその理由を詳しく記載。
+"""
+    model = genai.GenerativeModel(MODEL_NAME)
+    resp = model.generate_content(main_prompt)
+    full_text = resp.text.strip()
+
+    message_body = full_text
+    if "===SIGNALS_JSON_START===" in full_text and "===SIGNALS_JSON_END===" in full_text:
+        sig_raw = full_text.split("===SIGNALS_JSON_START===")[1].split("===SIGNALS_JSON_END===")[0].strip()
+        message_body = full_text.split("===SIGNALS_JSON_END===")[1].strip()
+        try:
+            new_signals = json.loads(sig_raw)
+            existing_keys = {(p["symbol"], p["direction"]) for p in trade_log.get("open_positions", [])}
+            for sig in new_signals:
+                key = (sig["symbol"], sig["direction"])
+                if key not in existing_keys and float(sig.get("entry_price", 0)) > 0:
+                    trade_log["open_positions"].append({
+                        "symbol": sig["symbol"],
+                        "timeframe_type": sig.get("timeframe_type", "短期デイトレ（1〜3時間・浅い指値）"),
+                        "direction": sig["direction"],
+                        "entry_price": round(float(sig["entry_price"]), 4),
+                        "current_price": round(float(sig["entry_price"]), 4),
+                        "tp": round(float(sig["tp"]), 4),
+                        "sl": round(float(sig["sl"]), 4),
+                        "unrealized_pnl": 0.0,
+                        "reason": sig.get("reason", ""),
+                        "opened_at": NOW_JST.strftime("%Y-%m-%d %H:%M JST"),
+                        "status": "OPEN",
+                    })
+                    existing_keys.add(key)
+            save_json(TRADE_LOG_FILE, trade_log)
+        except Exception as e:
+            print(f"[Signal JSON Parse Error] {e}")
+
+    header = f"⏰ 【定期AI相場レポート】{NOW_JST.strftime('%m/%d %H:%M')} JST\n"
+    if evo_reports:
+        header += "\n" + "\n\n".join(evo_reports) + "\n\n" + "=" * 24 + "\n\n"
+
+    send_line_message(header + message_body)
+
+
+# ==============================================================================
+# エントリーポイント
+# ==============================================================================
 if __name__ == "__main__":
-    main()
+    default_trade_log = {"open_positions": [], "closed_history": []}
+    default_evolution = {
+        "consecutive_losses": 0,
+        "strict_mode": False,
+        "tag_counts": {"TAG_1": 0, "TAG_2": 0, "TAG_3": 0, "TAG_4": 0, "TAG_5": 0},
+        "gold_short_rules": [
+            "初期設定：チャンスを逃さない広めの基準で1H・15Mの押し目/戻り目を浅い指値（有効期限45〜60分）で狙う",
+            "エントリー前に直近24H高値・安値・キリのいい価格帯（壁）までの距離を必ず確認する",
+        ],
+        "gold_long_rules": [
+            "4H・日足の大局トレンド、FRB金利/世界情勢、米ドル強弱の3つが完全一致した特選場面のみ提示する",
+        ],
+        "fx_pairs_rules": [
+            "通貨強弱の相関ダブりを避け、サブ6通貨ペアから最も期待値が高い最良1銘柄のみ厳選する",
+        ],
+        "weekend_market_outlook": "",
+        "last_evolution_note": "",
+    }
+
+    trade_log = load_json(TRADE_LOG_FILE, default_trade_log)
+    evolution_data = load_json(EVOLUTION_FILE, default_evolution)
+
+    if is_weekend_closed(NOW_JST):
+        print("[Mode] 土日休場：週末集中学習モードを実行します")
+        run_weekend_study_mode(trade_log, evolution_data)
+    else:
+        print("[Mode] 平日市場オープン：定期分析＆自己進化を実行します")
+        run_weekday_analysis(trade_log, evolution_data)
