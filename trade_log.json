@@ -7,5 +7,14 @@
     "sl": 3492.0,
     "status": "PENDING",
     "pnl": 0.0
+  },
+  {
+    "timestamp": "2026-11-25 17:35:53",
+    "direction": "BUY",
+    "entry": 3530.0,
+    "tp": 3575.0,
+    "sl": 3495.0,
+    "status": "PENDING",
+    "pnl": 0.0
   }
 ]
