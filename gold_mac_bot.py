@@ -478,15 +478,27 @@ JSON形式のみで出力してください：
 }}
 """
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model="gemini-3.5-pro",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.1,
-        ),
-    )
+        client = genai.Client(api_key=GEMINI_API_KEY)
+    response = None
+    for model_name in ["gemini-2.5-pro", "gemini-3-pro-preview", "gemini-2.5-flash", "gemini-3.5-flash-lite"]:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                ),
+            )
+            print(f"使用モデル: {model_name}")
+            break
+        except Exception as e:
+            print(f"モデル {model_name} スキップ: {e}")
+
+    if response is None:
+        print("利用可能なGeminiモデルが見つかりませんでした")
+        save_logs(logs)
+        return
 
     try:
         result = json.loads(response.text)
