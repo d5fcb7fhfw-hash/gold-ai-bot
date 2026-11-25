@@ -1,0 +1,42 @@
+name: XAUUSD AI Bot (16:00-23:00 JST)
+
+on:
+  # 毎日 日本時間 16:00〜23:00 の毎時0分に実行（UTCでは 7:00〜14:00）
+  schedule:
+    - cron: '0 7,8,9,10,11,12,13,14 * * 1-5'
+  # 手動でいつでもテスト実行できるようにするボタンを追加
+  workflow_dispatch:
+
+jobs:
+  run-analysis:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリの最新データを取得
+        uses: actions/checkout@v4
+
+      - name: Python 3.12 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 必要なライブラリをインストール
+        run: |
+          pip install requests pandas google-genai
+
+      - name: AI相場分析＆自動採点スクリプトを実行
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: |
+          python gold_mac_bot.py
+
+      - name: 仮想トレード成績ログ（trade_log.json）を自動保存
+        run: |
+          git config user.name "Gold AI Bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add trade_log.json || true
+          git diff --staged --quiet || git commit -m "Update trade_log.json"
+          git push
