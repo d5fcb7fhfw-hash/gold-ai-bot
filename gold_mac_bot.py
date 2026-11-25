@@ -23,7 +23,19 @@ MODEL_CANDIDATES = [
     "gemini-2.5-flash",
 ]
 
+JST = datetime.timezone(datetime.timedelta(hours=9))
+NOW_JST = datetime.datetime.now(JST)
 
+GOLD_SYMBOL = "XAU/USD"
+SUB_PAIRS = ["USD/JPY", "EUR/USD", "GBP/JPY", "GBP/USD", "EUR/JPY", "AUD/USD"]
+
+TRADE_LOG_FILE = "trade_log.json"
+EVOLUTION_FILE = "ai_evolution.json"
+
+
+# ==============================================================================
+# Gemini 呼び出し（利用可能モデル自動探索・429レート制限時の自動切替付き）
+# ==============================================================================
 def get_available_models():
     candidates = []
     try:
@@ -39,13 +51,11 @@ def get_available_models():
                 candidates.append(name)
     except Exception:
         pass
-    # MODEL_CANDIDATES に書いた順を優先しつつ、APIが返した実在モデルだけを残す
     ordered = [m for m in MODEL_CANDIDATES if m in candidates]
     for m in candidates:
         if m not in ordered:
             ordered.append(m)
     return ordered if ordered else MODEL_CANDIDATES
-
 
 
 def generate_with_retry(prompt, retries=2):
