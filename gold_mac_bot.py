@@ -1,3 +1,4 @@
+
 import os
 import json
 import time
@@ -88,7 +89,7 @@ def get_google_news_rss() -> str:
     return "\n".join(news_list) if news_list else "主要ニュースなし"
 
 # ==========================================
-# 4. 高度テクニカル＆プライスアクション数値化データ取得
+# 4. 高度テクニカル＆プライスアクション数値化データ取得（429自動リトライ付き）
 # ==========================================
 def get_market_data(symbol: str, interval: str, outputsize: int = 80) -> pd.DataFrame:
     url = "https://api.twelvedata.com/time_series"
@@ -98,8 +99,16 @@ def get_market_data(symbol: str, interval: str, outputsize: int = 80) -> pd.Data
         "outputsize": outputsize,
         "apikey": TWELVE_DATA_API_KEY
     }
-    res = requests.get(url, params=params).json()
-    if "values" not in res:
+    
+    # 無料枠(1分8回)を超えた場合は65秒待って最大2回リトライする
+    for attempt in range(3):
+        res = requests.get(url, params=params, timeout=15).json()
+        if "values" in res:
+            break
+        if res.get("code") == 429 and attempt < 2:
+            print(f"⏳ APIレート制限(1分8回上限)のため65秒待機して再取得します... ({symbol} {interval})")
+            time.sleep(65)
+            continue
         raise ValueError(f"{symbol} ({interval}) データ取得エラー: {res}")
 
     df = pd.DataFrame(res["values"]).iloc[::-1].reset_index(drop=True)
@@ -502,18 +511,18 @@ if __name__ == "__main__":
     calendar_text = get_economic_calendar_jst()
     news_text = get_google_news_rss()
 
-    print("2/4 XAU/USD 全時間足（1D〜5M）データを取得中...")
+    print("2/4 XAU/USD 全時間足（1D〜5M）データを取得中（API制限回避のため10秒間隔）...")
     timeframes = ["1day", "4h", "1h", "15min", "5min"]
     data_dict = {}
     for tf in timeframes:
         out_size = 100 if tf == "15min" else 60
         data_dict[tf] = get_market_data("XAU/USD", tf, outputsize=out_size)
-        time.sleep(1.5)
+        time.sleep(10)
 
     print("3/4 相関資産（DXY・XAG/USD）を取得中...")
     try:
         df_dxy = get_market_data("DXY", "1h", outputsize=30)
-        time.sleep(1.5)
+        time.sleep(10)
     except Exception:
         df_dxy = data_dict["1h"]
 
