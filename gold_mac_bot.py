@@ -10,9 +10,6 @@ import pandas as pd
 from google import genai
 from google.genai import types
 
-import os
-# （その他のimportは先ほどと同じ）
-
 # ==========================================
 # 1. 設定項目（GitHub Secretsから自動読み込み）
 # ==========================================
@@ -21,9 +18,12 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 LINE_USER_ID = os.environ["LINE_USER_ID"]
 
+LOG_FILE = "trade_log.json"
+JST = timezone(timedelta(hours=9))
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ==========================================
-# 2. 経済指標カレンダー取得（ForexFactory無料XML → 日本時間変換）
+# 2. 経済指標カレンダー取得（ForexFactory無料XML）
 # ==========================================
 def get_economic_calendar_jst() -> str:
     url = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
@@ -41,7 +41,6 @@ def get_economic_calendar_jst() -> str:
         for event in root.findall(".//event"):
             country = event.findtext("country", default="").strip()
             impact = event.findtext("impact", default="").strip()
-            # ゴールドに直結するUSDのHigh/Medium指標のみ抽出
             if country != "USD" or impact not in ["High", "Medium"]:
                 continue
                 
@@ -52,14 +51,13 @@ def get_economic_calendar_jst() -> str:
             previous = event.findtext("previous", default="-").strip()
             
             if date_str in [today_str, tomorrow_str]:
-                # ForexFactoryは基本UTC（またはEST）表記のため日本時間目安を付記
                 events.append(f"- [{date_str} {time_str} UTC] 【重要度:{impact}】{title} (予想:{forecast} / 前回:{previous})")
                 
         if not events:
             return "本日〜明日の重要USD経済指標は特にありません。"
         return "\n".join(events)
     except Exception as e:
-        return f"経済指標カレンダー取得スキップ（ニュース見出しで代用）: {e}"
+        return f"経済指標カレンダー取得スキップ: {e}"
 
 # ==========================================
 # 3. GoogleニュースRSS取得（米国市場＋日本市場）
@@ -108,31 +106,26 @@ def get_market_data(symbol: str, interval: str, outputsize: int = 80) -> pd.Data
     for col in ["open", "high", "low", "close"]:
         df[col] = df[col].astype(float)
 
-    # トレンド指標（EMA20, EMA50）
     df["EMA20"] = df["close"].ewm(span=20, adjust=False).mean()
     df["EMA50"] = df["close"].ewm(span=50, adjust=False).mean()
 
-    # ボリンジャーバンド（20期間 ±2σ）
     sma20 = df["close"].rolling(window=20).mean()
     std20 = df["close"].rolling(window=20).std()
     df["BB_Upper"] = sma20 + (std20 * 2)
     df["BB_Lower"] = sma20 - (std20 * 2)
     
-    # RSI14
     delta = df["close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df["RSI14"] = 100 - (100 / (1 + rs))
 
-    # ATR14（ボラティリティ）
     high_low = df["high"] - df["low"]
     high_close = (df["high"] - df["close"].shift()).abs()
     low_close = (df["low"] - df["close"].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["ATR14"] = tr.rolling(window=14).mean()
 
-    # プライスアクション（ヒゲの割合％：大口の反発サイン検出）
     candle_range = (df["high"] - df["low"]).replace(0, 0.01)
     upper_wick = df["high"] - df[["open", "close"]].max(axis=1)
     lower_wick = df[["open", "close"]].min(axis=1) - df["low"]
@@ -146,21 +139,17 @@ def get_market_data(symbol: str, interval: str, outputsize: int = 80) -> pd.Data
 # 5. 市場構造（重要サポレジ・ラウンドナンバー）の自動抽出
 # ==========================================
 def extract_key_levels(df_d1: pd.DataFrame, df_h1: pd.DataFrame, current_price: float) -> str:
-    # 前日高値・安値・終値
     prev_day = df_d1.iloc[-2]
     pdh = prev_day["high"]
     pdl = prev_day["low"]
     pdc = prev_day["close"]
     
-    # 直近5日間の最高値・最安値
     w_high = df_d1.tail(5)["high"].max()
     w_low = df_d1.tail(5)["low"].min()
     
-    # 直近24時間（1時間足24本）の高値・安値
     h24_high = df_h1.tail(24)["high"].max()
     h24_low = df_h1.tail(24)["low"].min()
     
-    # ラウンドナンバー（10ドル刻みの節目）
     base_10 = round(current_price / 10) * 10
     rn_above = base_10 if base_10 > current_price else base_10 + 10
     rn_below = base_10 if base_10 < current_price else base_10 - 10
@@ -174,7 +163,7 @@ def extract_key_levels(df_d1: pd.DataFrame, df_h1: pd.DataFrame, current_price: 
     """
 
 # ==========================================
-# 6. 仮想トレード記録・自動採点（答え合わせ）
+# 6. 仮想トレード記録・自動採点・週間戦績レポート作成
 # ==========================================
 def load_trade_logs() -> list:
     if not os.path.exists(LOG_FILE):
@@ -188,6 +177,76 @@ def load_trade_logs() -> list:
 def save_trade_logs(logs: list):
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, ensure_ascii=False, indent=2)
+
+def send_weekly_summary_line():
+    logs = load_trade_logs()
+    now_jst = datetime.now(JST)
+    one_week_ago = (now_jst - timedelta(days=7)).replace(tzinfo=None)
+
+    weekly_trades = []
+    for t in logs:
+        try:
+            t_dt = pd.to_datetime(t["timestamp"])
+            if t_dt >= one_week_ago:
+                weekly_trades.append(t)
+        except Exception:
+            pass
+
+    w_wins = [t for t in weekly_trades if t["status"] == "WIN"]
+    w_losses = [t for t in weekly_trades if t["status"] == "LOSS"]
+    w_active = [t for t in weekly_trades if t["status"] in ["PENDING", "OPEN"]]
+    w_expired = [t for t in weekly_trades if t["status"] == "EXPIRED"]
+    
+    w_settled = len(w_wins) + len(w_losses)
+    w_rate = round((len(w_wins) / w_settled * 100), 1) if w_settled > 0 else 0.0
+    w_pnl = round(sum(t.get("pnl", 0) for t in w_wins + w_losses), 2)
+
+    all_wins = [t for t in logs if t["status"] == "WIN"]
+    all_losses = [t for t in logs if t["status"] == "LOSS"]
+    all_settled = len(all_wins) + len(all_losses)
+    all_rate = round((len(all_wins) / all_settled * 100), 1) if all_settled > 0 else 0.0
+    all_pnl = round(sum(t.get("pnl", 0) for t in all_wins + all_losses), 2)
+
+    detail_lines = []
+    for t in weekly_trades[-15:]:
+        st = t["status"]
+        icon = {"WIN": "✅利確", "LOSS": "❌損切", "OPEN": "⏳保有中", "PENDING": "🕒指値待", "EXPIRED": "⚪️未約定"}.get(st, st)
+        pnl_str = f" ({t.get('pnl', 0):+}ドル)" if st in ["WIN", "LOSS"] else ""
+        date_short = t["timestamp"][5:16]
+        detail_lines.append(f"{icon} {date_short} {t['direction']} @{t['entry']}{pnl_str}")
+
+    details_text = "\n".join(detail_lines) if detail_lines else "今週のシグナル履歴はありません。"
+
+    report = f"""📊 XAU/USD AI週間戦績レポート
+（集計期間: {(now_jst - timedelta(days=7)).strftime('%m/%d')} 〜 {now_jst.strftime('%m/%d')}）
+
+■ 今週の成績
+・決済戦績：{len(w_wins)}勝 {len(w_losses)}敗（勝率 {w_rate}%）
+・週間損益：{w_pnl:+} ドル幅
+・その他　：保有/待機 {len(w_active)}件 / 未約定 {len(w_expired)}件
+
+■ 通算トータル成績
+・累計戦績：{len(all_wins)}勝 {len(all_losses)}敗（勝率 {all_rate}%）
+・累計損益：{all_pnl:+} ドル幅
+
+■ 今週のトレード履歴
+{details_text}
+
+今週もお疲れ様でした！来週月曜16時からまた自動監視を再開します。"""
+
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
+    }
+    payload = {
+        "to": LINE_USER_ID,
+        "messages": [{"type": "text", "text": report[:4900]}]
+    }
+    res = requests.post(url, headers=headers, json=payload)
+    if res.status_code != 200:
+        raise RuntimeError(f"週間レポートLINE送信エラー: {res.status_code} {res.text}")
+    print("📊 週間戦績レポートをLINEへ送信しました！")
 
 def evaluate_past_trades(logs: list, df_m15_full: pd.DataFrame) -> tuple[list, str, int]:
     if not logs:
@@ -246,7 +305,7 @@ def evaluate_past_trades(logs: list, df_m15_full: pd.DataFrame) -> tuple[list, s
                         newly_settled.append(f"✅ 勝ち（SELL {entry} → TP {tp} 到達 / +{trade['pnl']}ドル）")
                         break
 
-        if status == "PENDING" and (datetime.now() - trade_time).total_seconds() > 43200:
+        if status == "PENDING" and (datetime.now(JST).replace(tzinfo=None) - trade_time).total_seconds() > 43200:
             status = "EXPIRED"
 
         trade["status"] = status
@@ -387,7 +446,6 @@ def register_new_trade(logs: list, result_text: str, current_price: float) -> tu
         tp_val = float(tp_match.group(1))
         sl_val = float(sl_match.group(1))
 
-        # すでに同じ方向・近い価格帯の有効ポジションがある場合は重複登録をスキップ
         for t in logs:
             if t["status"] in ["PENDING", "OPEN"] and t["direction"] == direction and abs(t["entry"] - entry_val) < 5.0:
                 print("ℹ️ すでに同方向・近接価格のポジションを監視中のため、新規登録と重複通知をスキップします。")
@@ -395,7 +453,7 @@ def register_new_trade(logs: list, result_text: str, current_price: float) -> tu
 
         initial_status = "OPEN" if abs(current_price - entry_val) <= 2.0 else "PENDING"
         new_trade = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S"),
             "direction": direction,
             "entry": entry_val,
             "tp": tp_val,
@@ -431,6 +489,11 @@ def send_line(message: str, current_price: float, feedback_text: str):
 if __name__ == "__main__":
     now = datetime.now(JST)
     weekday = now.weekday()
+
+    if weekday == 5 and now.hour == 12:
+        send_weekly_summary_line()
+        exit(0)
+
     if (weekday == 5 and now.hour >= 7) or (weekday == 6) or (weekday == 0 and now.hour < 6):
         print("💤 FX市場休場中のため処理をスキップします。")
         exit(0)
@@ -462,7 +525,6 @@ if __name__ == "__main__":
     current_price = data_dict["5min"]["close"].iloc[-1]
     key_levels_text = extract_key_levels(data_dict["1day"], data_dict["1h"], current_price)
 
-    # 過去の答え合わせ
     logs = load_trade_logs()
     logs, feedback_text, active_count = evaluate_past_trades(logs, data_dict["15min"])
     print("\n--- AI自己検証・成績レポート ---")
@@ -487,4 +549,3 @@ if __name__ == "__main__":
     else:
         save_trade_logs(logs)
         print("⏸️ 判定が「様子見」（重要指標警戒等）のため、LINE通知をスキップしました。")
-
