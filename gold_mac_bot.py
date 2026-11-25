@@ -17,33 +17,32 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
 genai.configure(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-3.8-flash"
-
-JST = datetime.timezone(datetime.timedelta(hours=9))
-NOW_JST = datetime.datetime.now(JST)
-
-GOLD_SYMBOL = "XAU/USD"
-SUB_PAIRS = ["USD/JPY", "EUR/USD", "GBP/JPY", "GBP/USD", "EUR/JPY", "AUD/USD"]
-
-TRADE_LOG_FILE = "trade_log.json"
-EVOLUTION_FILE = "ai_evolution.json"
+MODEL_CANDIDATES = ["gemini-3.8-flash", "gemini-3.8-flash-lite"]
 
 
 # ==============================================================================
-# Gemini 呼び出し（429レート制限時の自動待機・リトライ付き）
+# Gemini 呼び出し（429レート制限時のモデル自動切替 ＆ 待機リトライ付き）
 # ==============================================================================
-def generate_with_retry(prompt, retries=3):
-    model = genai.GenerativeModel(MODEL_NAME)
-    for attempt in range(retries):
-        try:
-            resp = model.generate_content(prompt)
-            return resp.text.strip()
-        except Exception as e:
-            if "429" in str(e) and attempt < retries - 1:
-                print(f"[Gemini RateLimit] 1分上限のため65秒待機して再試行します... ({attempt + 1}/{retries})")
-                time.sleep(65)
-            else:
-                raise e
+def generate_with_retry(prompt, retries=2):
+    for model_name in MODEL_CANDIDATES:
+        model = genai.GenerativeModel(model_name)
+        for attempt in range(retries):
+            try:
+                resp = model.generate_content(prompt)
+                return resp.text.strip()
+            except Exception as e:
+                err_str = str(e)
+                if "PerDay" in err_str:
+                    print(f"[Gemini DailyLimit] {model_name} の1日上限到達。次の予備モデルへ切り替えます...")
+                    break
+                elif "429" in err_str and attempt < retries - 1:
+                    print(f"[Gemini RateLimit] 1分上限のため65秒待機して再試行します... ({attempt + 1}/{retries})")
+                    time.sleep(65)
+                else:
+                    if model_name == MODEL_CANDIDATES[-1]:
+                        raise e
+                    break
+    raise RuntimeError("すべてのGeminiモデルの無料枠上限に達しました。")
 
 
 # ==============================================================================
