@@ -14,10 +14,10 @@ from google.genai import types
 # ==========================================
 # 1. 設定項目（GitHub Secretsから自動読み込み）
 # ==========================================
-TWELVE_DATA_API_KEY = os.environ["TWELVE_DATA_API_KEY"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
-LINE_USER_ID = os.environ["LINE_USER_ID"]
+TWELVE_DATA_API_KEY = os.environ["TWELVE_DATA_API_KEY"].strip()
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"].strip()
+LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"].strip()
+LINE_USER_ID = os.environ["LINE_USER_ID"].strip()
 
 LOG_FILE = "trade_log.json"
 JST = timezone(timedelta(hours=9))
