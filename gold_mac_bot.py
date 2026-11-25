@@ -17,7 +17,12 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_CANDIDATES = ["gemini-3.8-flash", "gemini-3.8-flash-lite"]
+MODEL_CANDIDATES = [
+    "gemini-3.8-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+]
 
 JST = datetime.timezone(datetime.timedelta(hours=9))
 NOW_JST = datetime.datetime.now(JST)
@@ -30,10 +35,22 @@ EVOLUTION_FILE = "ai_evolution.json"
 
 
 # ==============================================================================
-# Gemini 呼び出し（429レート制限時のモデル自動切替 ＆ 待機リトライ付き）
+# Gemini 呼び出し（利用可能モデル自動探索・429レート制限時の自動切替付き）
 # ==============================================================================
+def get_available_models():
+    candidates = list(MODEL_CANDIDATES)
+    try:
+        for m in client.models.list():
+            name = m.name.replace("models/", "")
+            if "flash" in name and name not in candidates:
+                candidates.append(name)
+    except Exception:
+        pass
+    return candidates
+
+
 def generate_with_retry(prompt, retries=2):
-    for model_name in MODEL_CANDIDATES:
+    for model_name in get_available_models():
         for attempt in range(retries):
             try:
                 resp = client.models.generate_content(
@@ -43,17 +60,18 @@ def generate_with_retry(prompt, retries=2):
                 return resp.text.strip()
             except Exception as e:
                 err_str = str(e)
-                if "PerDay" in err_str:
-                    print(f"[Gemini DailyLimit] {model_name} の1日上限到達。次の予備モデルへ切り替えます...")
+                if "404" in err_str or "NOT_FOUND" in err_str:
+                    print(f"[Gemini Skip] {model_name} は未対応のためスキップします...")
+                    break
+                elif "PerDay" in err_str:
+                    print(f"[Gemini DailyLimit] {model_name} の1日上限到達。次のモデルへ切り替えます...")
                     break
                 elif "429" in err_str and attempt < retries - 1:
                     print(f"[Gemini RateLimit] 1分上限のため65秒待機して再試行します... ({attempt + 1}/{retries})")
                     time.sleep(65)
                 else:
-                    if model_name == MODEL_CANDIDATES[-1]:
-                        raise e
                     break
-    raise RuntimeError("すべてのGeminiモデルの無料枠上限に達しました。")
+    raise RuntimeError("利用可能なすべてのGeminiモデルの無料枠上限に達しました。")
 
 
 # ==============================================================================
