@@ -478,74 +478,8 @@ JSON形式のみで出力してください：
 }}
 """
 
-        client = genai.Client(api_key=GEMINI_API_KEY)
-    response = None
-    for model_name in ["gemini-2.5-pro", "gemini-3-pro-preview", "gemini-2.5-flash", "gemini-3.5-flash-lite"]:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1,
-                ),
-            )
-            print(f"使用モデル: {model_name}")
-            break
-        except Exception as e:
-            print(f"モデル {model_name} スキップ: {e}")
-
-    if response is None:
-        print("利用可能なGeminiモデルが見つかりませんでした")
-        save_logs(logs)
-        return
-
-    try:
-        result = json.loads(response.text)
-        opps = result.get("opportunities", [])
-    except Exception as e:
-        print("JSONパースエラー:", e)
-        save_logs(logs)
-        return
-
-    if not opps:
-        print("全銘柄見送り（通知スキップ）")
-        save_logs(logs)
-        return
-
-    msg_blocks = [f"👑 ゴールド最優先・精密MTFシグナル\n（{current_time.strftime('%m/%d %H:%M')} JST）\n"]
-    for op in opps:
-        sym = op["symbol"]
-        dir_jp = "買い（BUY）" if op["direction"] == "BUY" else "売り（SELL）"
-        badge = "👑【最優先ゴールド】" if sym == "XAU/USD" else f"🎯【サブ特選：{sym}】"
-        block = (
-            f"━━━━━━━━━━━━━━━━\n"
-            f"{badge} {dir_jp}｜{op.get('confidence', '高')}\n"
-            f"・注文方法：{op.get('order_type', op['direction'])}\n"
-            f"・エントリー：{op['entry']}\n"
-            f"・利確（TP）：{op['tp']}\n"
-            f"・損切り（SL）：{op['sl']}\n"
-            f"・RR比：{op.get('rr', '1 : 2.2')}\n"
-            f"・精密根拠：{op['reason']}"
-        )
-        msg_blocks.append(block)
-
-        logs.append({
-            "timestamp": current_time.strftime("%Y-%m-%d %H:%M"),
-            "symbol": sym,
-            "direction": op["direction"],
-            "entry": float(op["entry"]),
-            "tp": float(op["tp"]),
-            "sl": float(op["sl"]),
-            "reason": op.get("reason", ""),
-            "status": "PENDING",
-            "pnl": 0.0,
-        })
-
-    send_line_message("\n".join(msg_blocks))
-    save_logs(logs)
-    print(f"特選シグナル {len(opps)}件 を送信・記録しました。")
-
-
-if __name__ == "__main__":
-    main()
+        Run python gold_mac_bot.py
+  File "/home/runner/work/gold-ai-bot/gold-ai-bot/gold_mac_bot.py", line 481
+    client = genai.Client(api_key=GEMINI_API_KEY)
+IndentationError: unexpected indent
+Error: Process completed with exit code 1.
