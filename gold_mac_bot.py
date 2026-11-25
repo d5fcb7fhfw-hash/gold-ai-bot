@@ -42,7 +42,13 @@ def get_available_models():
     try:
         for m in client.models.list():
             name = m.name.replace("models/", "")
-            if "flash" in name and name not in candidates:
+            if (
+                "flash" in name
+                and "image" not in name
+                and "tts" not in name
+                and "audio" not in name
+                and name not in candidates
+            ):
                 candidates.append(name)
     except Exception:
         pass
