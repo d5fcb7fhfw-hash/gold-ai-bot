@@ -116,11 +116,11 @@ def analyze_dataframe(df, pa_bars=3):
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
     minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-    atr_smooth = tr.ewm(alpha=1/14, adjust=False).mean()
-    plus_di = 100 * (pd.Series(plus_dm).ewm(alpha=1/14, adjust=False).mean() / atr_smooth.replace(0, 1e-9))
-    minus_di = 100 * (pd.Series(minus_dm).ewm(alpha=1/14, adjust=False).mean() / atr_smooth.replace(0, 1e-9))
+    atr_smooth = tr.ewm(alpha=1 / 14, adjust=False).mean()
+    plus_di = 100 * (pd.Series(plus_dm).ewm(alpha=1 / 14, adjust=False).mean() / atr_smooth.replace(0, 1e-9))
+    minus_di = 100 * (pd.Series(minus_dm).ewm(alpha=1 / 14, adjust=False).mean() / atr_smooth.replace(0, 1e-9))
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1e-9)
-    adx14 = dx.ewm(alpha=1/14, adjust=False).mean().iloc[-1]
+    adx14 = dx.ewm(alpha=1 / 14, adjust=False).mean().iloc[-1]
 
     bb_mid = close.rolling(20).mean().iloc[-1]
     bb_std = close.rolling(20).std().iloc[-1]
@@ -141,8 +141,14 @@ def analyze_dataframe(df, pa_bars=3):
             f"{df['datetime'].iloc[i][-5:]} {candle_type} (始:{o} 高:{h} 安:{l} 終:{c} | 上ヒゲ:{upper_wick:.2f} 下ヒゲ:{lower_wick:.2f} 実体:{body:.2f})"
         )
 
-    trend = "UP" if (close.iloc[-1] > ema20.iloc[-1] and ema20.iloc[-1] > ema50.iloc[-1]) else (
-        "DOWN" if (close.iloc[-1] < ema20.iloc[-1] and ema20.iloc[-1] < ema50.iloc[-1]) else "RANGE"
+    trend = (
+        "UP"
+        if (close.iloc[-1] > ema20.iloc[-1] and ema20.iloc[-1] > ema50.iloc[-1])
+        else (
+            "DOWN"
+            if (close.iloc[-1] < ema20.iloc[-1] and ema20.iloc[-1] < ema50.iloc[-1])
+            else "RANGE"
+        )
     )
 
     return {
@@ -368,7 +374,11 @@ def main():
     top_subs = sub_candidates[:2]
 
     # サブ上位2銘柄（＋保有中ポジション）の15Mと4Hを取得
-    active_syms = {t.get("symbol") for t in logs if t.get("status") in ["PENDING", "OPEN"] and t.get("symbol") != "XAU/USD"}
+    active_syms = {
+        t.get("symbol")
+        for t in logs
+        if t.get("status") in ["PENDING", "OPEN"] and t.get("symbol") != "XAU/USD"
+    }
     for sym in ({c[1]["symbol"] for c in top_subs} | active_syms):
         df_15 = fetch_single_tf(sym, "15min", 50)
         time.sleep(10)
@@ -388,7 +398,12 @@ def main():
 
     # 4. ゴールド最優先精密レポート構築
     gold_section = "【XAU/USD データ取得エラー】"
-    if "XAU/USD" in h1_map and df_gold_4h is not None and df_gold_15m is not None and df_gold_5m is not None:
+    if (
+        "XAU/USD" in h1_map
+        and df_gold_4h is not None
+        and df_gold_15m is not None
+        and df_gold_5m is not None
+    ):
         g4 = analyze_dataframe(df_gold_4h, pa_bars=3)
         g1 = analyze_dataframe(h1_map["XAU/USD"], pa_bars=3)
         g15 = analyze_dataframe(df_gold_15m, pa_bars=4)
@@ -398,7 +413,11 @@ def main():
         atr15 = g15["atr14"]
         max_pullback = round(atr15 * 0.30, 2)
         min_sl_dist = round(atr15 * 1.30, 2)
-        usd_blocked = "⚠️現在USD重要指標前後45分ロック中（原則見送り推奨）" if "USD" in blocked_currencies else "指標ロックなし"
+        usd_blocked = (
+            "⚠️現在USD重要指標前後45分ロック中（原則見送り推奨）"
+            if "USD" in blocked_currencies
+            else "指標ロックなし"
+        )
 
         gold_section = f"""
 ★★★【最優先VIP銘柄：XAU/USD（ゴールド）4重時間足フル解析】★★★
@@ -431,7 +450,7 @@ def main():
         d = meta["digits"]
         atr = ind_15m["atr14"]
         sub_sections.append(
-            f"【サブ候補：{sym}（{meta['name']}）】現在値: {ind_15m['close']:.{d}f} | 4H&1H:{ind_1h['trend']}一致 | ADX:{ind_1h['adx14']:.1f} | 許容指値幅:±{atr*0.3:.{d}f} | 最低SL幅:{atr*1.2:.{d}f}\n"
+            f"【サブ候補：{sym}（{meta['name']}）】現在値: {ind_15m['close']:.{d}f} | 4H&1H:{ind_1h['trend']}一致 | ADX:{ind_1h['adx14']:.1f} | 許容指値幅:±{atr * 0.3:.{d}f} | 最低SL幅:{atr * 1.2:.{d}f}\n"
             f"  4H_EMA20:{ind_4h['ema20']:.{d}f}, RSI:{ind_4h['rsi14']:.1f} | 1H_EMA20:{ind_1h['ema20']:.{d}f}, RSI:{ind_1h['rsi14']:.1f} | 15M_RSI:{ind_15m['rsi14']:.1f}"
         )
 
@@ -478,8 +497,83 @@ JSON形式のみで出力してください：
 }}
 """
 
-        Run python gold_mac_bot.py
-  File "/home/runner/work/gold-ai-bot/gold-ai-bot/gold_mac_bot.py", line 481
     client = genai.Client(api_key=GEMINI_API_KEY)
-IndentationError: unexpected indent
-Error: Process completed with exit code 1.
+    response = None
+    for model_name in [
+        "gemini-2.5-pro",
+        "gemini-3-pro-preview",
+        "gemini-2.5-flash",
+        "gemini-3.5-flash-lite",
+    ]:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                ),
+            )
+            print(f"使用モデル: {model_name}")
+            break
+        except Exception as e:
+            print(f"モデル {model_name} スキップ: {e}")
+
+    if response is None:
+        print("利用可能なGeminiモデルが見つかりませんでした")
+        save_logs(logs)
+        return
+
+    try:
+        result = json.loads(response.text)
+        opps = result.get("opportunities", [])
+    except Exception as e:
+        print("JSONパースエラー:", e)
+        save_logs(logs)
+        return
+
+    if not opps:
+        print("全銘柄見送り（通知スキップ）")
+        save_logs(logs)
+        return
+
+    msg_blocks = [
+        f"👑 ゴールド最優先・精密MTFシグナル\n（{current_time.strftime('%m/%d %H:%M')} JST）\n"
+    ]
+    for op in opps:
+        sym = op["symbol"]
+        dir_jp = "買い（BUY）" if op["direction"] == "BUY" else "売り（SELL）"
+        badge = "👑【最優先ゴールド】" if sym == "XAU/USD" else f"🎯【サブ特選：{sym}】"
+        block = (
+            f"━━━━━━━━━━━━━━━━\n"
+            f"{badge} {dir_jp}｜{op.get('confidence', '高')}\n"
+            f"・注文方法：{op.get('order_type', op['direction'])}\n"
+            f"・エントリー：{op['entry']}\n"
+            f"・利確（TP）：{op['tp']}\n"
+            f"・損切り（SL）：{op['sl']}\n"
+            f"・RR比：{op.get('rr', '1 : 2.2')}\n"
+            f"・精密根拠：{op['reason']}"
+        )
+        msg_blocks.append(block)
+
+        logs.append(
+            {
+                "timestamp": current_time.strftime("%Y-%m-%d %H:%M"),
+                "symbol": sym,
+                "direction": op["direction"],
+                "entry": float(op["entry"]),
+                "tp": float(op["tp"]),
+                "sl": float(op["sl"]),
+                "reason": op.get("reason", ""),
+                "status": "PENDING",
+                "pnl": 0.0,
+            }
+        )
+
+    send_line_message("\n".join(msg_blocks))
+    save_logs(logs)
+    print(f"特選シグナル {len(opps)}件 を送信・記録しました。")
+
+
+if __name__ == "__main__":
+    main()
