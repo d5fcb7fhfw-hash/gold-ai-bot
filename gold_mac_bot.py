@@ -18,8 +18,11 @@ LINE_USER_ID = os.environ.get("LINE_USER_ID", "").strip()
 
 LOG_FILE = "trade_log.json"
 
-SYMBOLS = [
-    {"symbol": "XAU/USD", "name": "ゴールド", "currencies": ["USD"], "pip_unit": 1.0, "digits": 2},
+# 最優先VIP銘柄
+GOLD_META = {"symbol": "XAU/USD", "name": "ゴールド（最優先VIP）", "currencies": ["USD"], "pip_unit": 1.0, "digits": 2}
+
+# サブ監視6銘柄
+SUB_SYMBOLS = [
     {"symbol": "USD/JPY", "name": "ドル円", "currencies": ["USD", "JPY"], "pip_unit": 0.01, "digits": 3},
     {"symbol": "EUR/USD", "name": "ユーロドル", "currencies": ["EUR", "USD"], "pip_unit": 0.0001, "digits": 5},
     {"symbol": "GBP/JPY", "name": "ポンド円", "currencies": ["GBP", "JPY"], "pip_unit": 0.01, "digits": 3},
@@ -28,6 +31,7 @@ SYMBOLS = [
     {"symbol": "AUD/USD", "name": "豪ドル米ドル", "currencies": ["AUD", "USD"], "pip_unit": 0.0001, "digits": 5},
 ]
 
+ALL_SYMBOLS = [GOLD_META] + SUB_SYMBOLS
 JST = datetime.timezone(datetime.timedelta(hours=9))
 
 
@@ -36,7 +40,7 @@ def now_jst():
 
 
 # ==========================================
-# Twelve Data API 取得（バッチ＆個別リトライ対応）
+# Twelve Data API 取得（レート制限完全回避）
 # ==========================================
 def fetch_batch_1h(symbols_list):
     joined = ",".join(symbols_list)
@@ -86,9 +90,9 @@ def fetch_single_tf(symbol, interval, outputsize=50):
 
 
 # ==========================================
-# 高度なテクニカル指標・プライスアクション計算
+# 精密テクニカル＆プライスアクション解析
 # ==========================================
-def analyze_dataframe(df):
+def analyze_dataframe(df, pa_bars=3):
     close = df["close"]
     high = df["high"]
     low = df["low"]
@@ -97,20 +101,17 @@ def analyze_dataframe(df):
     ema20 = close.ewm(span=20, adjust=False).mean()
     ema50 = close.ewm(span=50, adjust=False).mean()
 
-    # RSI14
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = (-delta.clip(upper=0)).rolling(14).mean()
     rs = gain / loss.replace(0, 1e-9)
     rsi14 = (100 - (100 / (1 + rs))).iloc[-1]
 
-    # ATR14
     tr = pd.concat(
         [high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1
     ).max(axis=1)
     atr14 = tr.rolling(14).mean().iloc[-1]
 
-    # ADX14（トレンド強度）
     up_move = high.diff()
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
@@ -121,26 +122,23 @@ def analyze_dataframe(df):
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1e-9)
     adx14 = dx.ewm(alpha=1/14, adjust=False).mean().iloc[-1]
 
-    # ボリンジャーバンド
     bb_mid = close.rolling(20).mean().iloc[-1]
     bb_std = close.rolling(20).std().iloc[-1]
     bb_upper = bb_mid + 2 * bb_std
     bb_lower = bb_mid - 2 * bb_std
 
-    # 直近スイング高値・安値（24本）
     swing_high = high.iloc[-24:].max()
     swing_low = low.iloc[-24:].min()
 
-    # 直近3本のローソク足プライスアクション（ヒゲ比率・陽線陰線）
     pa_lines = []
-    for i in range(-3, 0):
+    for i in range(-pa_bars, 0):
         o, h, l, c = open_p.iloc[i], high.iloc[i], low.iloc[i], close.iloc[i]
         body = abs(c - o)
         upper_wick = h - max(o, c)
         lower_wick = min(o, c) - l
         candle_type = "陽線" if c >= o else "陰線"
         pa_lines.append(
-            f"{df['datetime'].iloc[i][-5:]} {candle_type} (始:{o} 高:{h} 安:{l} 終:{c} | 上ヒゲ:{upper_wick:.4f} 下ヒゲ:{lower_wick:.4f} 実体:{body:.4f})"
+            f"{df['datetime'].iloc[i][-5:]} {candle_type} (始:{o} 高:{h} 安:{l} 終:{c} | 上ヒゲ:{upper_wick:.2f} 下ヒゲ:{lower_wick:.2f} 実体:{body:.2f})"
         )
 
     trend = "UP" if (close.iloc[-1] > ema20.iloc[-1] and ema20.iloc[-1] > ema50.iloc[-1]) else (
@@ -164,7 +162,7 @@ def analyze_dataframe(df):
 
 
 # ==========================================
-# 経済指標リスクチェック（前後45分を厳格ロック）
+# 経済指標チェック
 # ==========================================
 def get_blocked_currencies_and_events():
     blocked = set()
@@ -222,7 +220,7 @@ def evaluate_past_trades(logs, m15_map):
         if df is None or df.empty:
             continue
 
-        pip_unit = next((s["pip_unit"] for s in SYMBOLS if s["symbol"] == sym), 1.0)
+        pip_unit = next((s["pip_unit"] for s in ALL_SYMBOLS if s["symbol"] == sym), 1.0)
         entry = float(t["entry"])
         tp = float(t["tp"])
         sl = float(t["sl"])
@@ -233,12 +231,10 @@ def evaluate_past_trades(logs, m15_map):
         except Exception:
             created_dt = now
 
-        # 6時間経過して未約定ならEXPIRED（古い指値を引きずらない）
         if t["status"] == "PENDING" and (now - created_dt).total_seconds() > 6 * 3600:
             t["status"] = "EXPIRED"
             continue
 
-        # 直近4本（1時間分）の15分足で判定
         for _, bar in df.iloc[-4:].iterrows():
             hi, lo = bar["high"], bar["low"]
             if t["status"] == "PENDING":
@@ -273,15 +269,14 @@ def build_learning_feedback(logs):
     expired = [t for t in logs if t.get("status") == "EXPIRED"]
 
     recent_failures = [
-        f"・{t.get('symbol')} {t.get('direction')} @{t.get('entry')} → 結果:{t.get('status')} (根拠:{t.get('reason', '')[:40]})"
+        f"・{t.get('symbol')} {t.get('direction')} @{t.get('entry')} → 結果:{t.get('status')} (根拠:{t.get('reason', '')[:45]})"
         for t in (losses + expired)[-5:]
     ]
-    feedback = (
+    return (
         f"通算実績: {len(wins)}勝 {len(losses)}敗 / 未約定(EXPIRED): {len(expired)}件。\n"
         f"【過去の失敗・未約定パターン（同じミスを絶対に繰り返さないこと）】\n"
         + ("\n".join(recent_failures) if recent_failures else "まだ失敗履歴なし")
     )
-    return feedback
 
 
 # ==========================================
@@ -327,7 +322,7 @@ def send_weekly_report(logs):
 
 
 # ==========================================
-# メイン処理（2段階精密スクリーニング）
+# メイン処理（ゴールド最優先4時間足フル解析 ＋ サブ6銘柄厳選）
 # ==========================================
 def main():
     current_time = now_jst()
@@ -337,94 +332,108 @@ def main():
         send_weekly_report(logs)
         return
 
-    print(f"=== {current_time.strftime('%Y-%m-%d %H:%M')} JST 精密2段階スキャン開始 ===")
+    print(f"=== {current_time.strftime('%Y-%m-%d %H:%M')} JST ゴールド最優先＆全7銘柄精密スキャン開始 ===")
     blocked_currencies, calendar_text = get_blocked_currencies_and_events()
-    print("指標ロック中通貨:", blocked_currencies)
 
-    # 第1段階：全7銘柄の1時間足をバッチ取得（わずか1クレジット消費）
-    all_sym_names = [s["symbol"] for s in SYMBOLS]
-    h1_map = fetch_batch_1h(all_sym_names)
+    # 1. 全7銘柄の1時間足を1バッチで取得
+    h1_map = fetch_batch_1h([s["symbol"] for s in ALL_SYMBOLS])
     time.sleep(10)
 
-    # トレンド強度（ADX）と指標リスクで有望な上位3銘柄に絞り込み
-    candidates = []
-    for meta in SYMBOLS:
+    # 2. 【最優先VIP枠】XAU/USD の 4H・15M・5M を無条件でフル取得（4重時間足解析）
+    df_gold_4h = fetch_single_tf("XAU/USD", "4h", 50)
+    time.sleep(10)
+    df_gold_15m = fetch_single_tf("XAU/USD", "15min", 50)
+    time.sleep(10)
+    df_gold_5m = fetch_single_tf("XAU/USD", "5min", 50)
+    time.sleep(10)
+
+    m15_map = {}
+    if df_gold_15m is not None:
+        m15_map["XAU/USD"] = df_gold_15m
+
+    # 3. サブ6銘柄からトレンド強度（ADX）上位2銘柄のみ抽出
+    sub_candidates = []
+    for meta in SUB_SYMBOLS:
         sym = meta["symbol"]
         if any(c in blocked_currencies for c in meta["currencies"]):
-            print(f"[{sym}] 重要指標前後45分のため除外")
             continue
         df_1h = h1_map.get(sym)
         if df_1h is None or len(df_1h) < 50:
             continue
         ind_1h = analyze_dataframe(df_1h)
-        # トレンドが明確かつADX >= 20の銘柄のみ候補化
-        if ind_1h["trend"] != "RANGE" and ind_1h["adx14"] >= 20.0:
-            candidates.append((ind_1h["adx14"], meta, ind_1h))
+        if ind_1h["trend"] != "RANGE" and ind_1h["adx14"] >= 22.0:
+            sub_candidates.append((ind_1h["adx14"], meta, ind_1h))
 
-    # ADXが高い順に上位3銘柄を選出
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    top_candidates = candidates[:3]
+    sub_candidates.sort(key=lambda x: x[0], reverse=True)
+    top_subs = sub_candidates[:2]
 
-    # 第2段階：上位3銘柄（＋保有中ポジションがある銘柄）の4Hと15Mを精密取得
-    active_syms = {t.get("symbol") for t in logs if t.get("status") in ["PENDING", "OPEN"]}
-    target_syms_for_15m = {c[1]["symbol"] for c in top_candidates} | active_syms
-
-    m15_map = {}
-    h4_ind_map = {}
-    m15_ind_map = {}
-
-    for sym in target_syms_for_15m:
-        df_15m = fetch_single_tf(sym, "15min", 50)
+    # サブ上位2銘柄（＋保有中ポジション）の15Mと4Hを取得
+    active_syms = {t.get("symbol") for t in logs if t.get("status") in ["PENDING", "OPEN"] and t.get("symbol") != "XAU/USD"}
+    for sym in ({c[1]["symbol"] for c in top_subs} | active_syms):
+        df_15 = fetch_single_tf(sym, "15min", 50)
         time.sleep(10)
-        if df_15m is not None:
-            m15_map[sym] = df_15m
-            m15_ind_map[sym] = analyze_dataframe(df_15m)
+        if df_15 is not None:
+            m15_map[sym] = df_15
 
-    for _, meta, _ in top_candidates:
+    sub_h4_map = {}
+    for _, meta, _ in top_subs:
         sym = meta["symbol"]
-        df_4h = fetch_single_tf(sym, "4h", 50)
+        df_4 = fetch_single_tf(sym, "4h", 50)
         time.sleep(10)
-        if df_4h is not None:
-            h4_ind_map[sym] = analyze_dataframe(df_4h)
+        if df_4 is not None:
+            sub_h4_map[sym] = analyze_dataframe(df_4)
 
     # 過去トレードの約定・決済採点
     logs = evaluate_past_trades(logs, m15_map)
 
-    # 4Hと1Hの方向が完全一致する銘柄だけを最終プロンプトに投入
-    final_reports = []
-    for _, meta, ind_1h in top_candidates:
+    # 4. ゴールド最優先精密レポート構築
+    gold_section = "【XAU/USD データ取得エラー】"
+    if "XAU/USD" in h1_map and df_gold_4h is not None and df_gold_15m is not None and df_gold_5m is not None:
+        g4 = analyze_dataframe(df_gold_4h, pa_bars=3)
+        g1 = analyze_dataframe(h1_map["XAU/USD"], pa_bars=3)
+        g15 = analyze_dataframe(df_gold_15m, pa_bars=4)
+        g5 = analyze_dataframe(df_gold_5m, pa_bars=5)
+
+        cur = g5["close"]
+        atr15 = g15["atr14"]
+        max_pullback = round(atr15 * 0.30, 2)
+        min_sl_dist = round(atr15 * 1.30, 2)
+        usd_blocked = "⚠️現在USD重要指標前後45分ロック中（原則見送り推奨）" if "USD" in blocked_currencies else "指標ロックなし"
+
+        gold_section = f"""
+★★★【最優先VIP銘柄：XAU/USD（ゴールド）4重時間足フル解析】★★★
+・現在値: {cur:.2f} | 指標状態: {usd_blocked}
+・許容指値幅（未約定防止）: 現在値から ±{max_pullback:.2f} ドル以内（これ以上離すな）
+・最低損切り幅（ヒゲ狩り防止）: {min_sl_dist:.2f} ドル以上（1.3×ATR14基準）
+・目標利確幅（損小利大）: 損切り幅の 2.2倍〜3.2倍以上
+
+[4時間足(4H)] トレンド:{g4['trend']} | EMA20:{g4['ema20']:.2f} | EMA50:{g4['ema50']:.2f} | RSI14:{g4['rsi14']:.1f} | ADX14:{g4['adx14']:.1f} | 24本高値:{g4['swing_high']:.2f} / 安値:{g4['swing_low']:.2f}
+[1時間足(1H)] トレンド:{g1['trend']} | EMA20:{g1['ema20']:.2f} | EMA50:{g1['ema50']:.2f} | RSI14:{g1['rsi14']:.1f} | ADX14:{g1['adx14']:.1f} | BB上限:{g1['bb_upper']:.2f} / 下限:{g1['bb_lower']:.2f}
+[15分足(15M)] トレンド:{g15['trend']} | EMA20:{g15['ema20']:.2f} | RSI14:{g15['rsi14']:.1f} | ATR14:{atr15:.2f} | 24本高値:{g15['swing_high']:.2f} / 安値:{g15['swing_low']:.2f}
+  15M直近プライスアクション:
+    {g15['pa_text']}
+[5分足(5M) エントリートリガー] トレンド:{g5['trend']} | EMA20:{g5['ema20']:.2f} | RSI14:{g5['rsi14']:.1f}
+  5M直近5本プライスアクション:
+    {g5['pa_text']}
+"""
+
+    # 5. サブ銘柄レポート構築（4Hと1H一致のみ）
+    sub_sections = []
+    for _, meta, ind_1h in top_subs:
         sym = meta["symbol"]
-        ind_4h = h4_ind_map.get(sym)
-        ind_15m = m15_ind_map.get(sym)
-        if not ind_4h or not ind_15m:
+        ind_4h = sub_h4_map.get(sym)
+        df_15 = m15_map.get(sym)
+        if not ind_4h or df_15 is None:
             continue
-
-        # 4Hと1Hのトレンド不一致（ダマシ）を厳格除外
         if ind_4h["trend"] != ind_1h["trend"]:
-            print(f"[{sym}] 4H({ind_4h['trend']})と1H({ind_1h['trend']})のトレンド不一致のため除外")
             continue
-
+        ind_15m = analyze_dataframe(df_15, pa_bars=3)
         d = meta["digits"]
         atr = ind_15m["atr14"]
-        cur = ind_15m["close"]
-        max_pullback = round(atr * 0.35, d)
-        min_sl_dist = round(atr * 1.2, d)
-
-        report = (
-            f"【{sym}（{meta['name']}）】現在値: {cur:.{d}f} | 方向: {ind_1h['trend']}トレンド一致\n"
-            f"  ・許容指値幅（現在値から最大）: ±{max_pullback:.{d}f} 以内（これ以上離すと未約定になるため厳禁）\n"
-            f"  ・最低損切り幅（ノイズ回避）: {min_sl_dist:.{d}f} 以上\n"
-            f"  ・4時間足(4H): EMA20={ind_4h['ema20']:.{d}f}, EMA50={ind_4h['ema50']:.{d}f}, RSI14={ind_4h['rsi14']:.1f}, 高値={ind_4h['swing_high']:.{d}f}, 安値={ind_4h['swing_low']:.{d}f}\n"
-            f"  ・1時間足(1H): EMA20={ind_1h['ema20']:.{d}f}, ADX14={ind_1h['adx14']:.1f}, RSI14={ind_1h['rsi14']:.1f}, BB上限={ind_1h['bb_upper']:.{d}f}, BB下限={ind_1h['bb_lower']:.{d}f}\n"
-            f"  ・15分足(15M): EMA20={ind_15m['ema20']:.{d}f}, RSI14={ind_15m['rsi14']:.1f}, ATR14={atr:.{d}f}\n"
-            f"  ・15M直近プライスアクション:\n    {ind_15m['pa_text']}"
+        sub_sections.append(
+            f"【サブ候補：{sym}（{meta['name']}）】現在値: {ind_15m['close']:.{d}f} | 4H&1H:{ind_1h['trend']}一致 | ADX:{ind_1h['adx14']:.1f} | 許容指値幅:±{atr*0.3:.{d}f} | 最低SL幅:{atr*1.2:.{d}f}\n"
+            f"  4H_EMA20:{ind_4h['ema20']:.{d}f}, RSI:{ind_4h['rsi14']:.1f} | 1H_EMA20:{ind_1h['ema20']:.{d}f}, RSI:{ind_1h['rsi14']:.1f} | 15M_RSI:{ind_15m['rsi14']:.1f}"
         )
-        final_reports.append(report)
-
-    if not final_reports:
-        print("全条件（4H/1H一致・ADX20以上・指標クリア）を満たす銘柄なし。通知スキップ。")
-        save_logs(logs)
-        return
 
     learning_text = build_learning_feedback(logs)
 
@@ -435,31 +444,35 @@ def main():
 【直近の重要経済指標】
 {calendar_text}
 
-【厳格フィルタを通過した最有望銘柄データ（4H・1Hトレンド完全一致）】
-{chr(10).join(final_reports)}
+{gold_section}
 
-あなたは機関投資家向けヘッジファンドの最高リスク管理責任者兼チーフストラテジストです。
-以下の絶対ルールを守り、**本当に勝率とリスクリワードが極めて高い最高峰のチャンス**だけを最大1〜2銘柄厳選してください。条件を少しでも満たさない場合は空配列 `[]` を返してください。
+【サブ監視銘柄（4H・1Hトレンド一致＆ADX22以上のみ）】
+{chr(10).join(sub_sections) if sub_sections else "現在サブ銘柄に強いトレンド一致なし"}
+
+あなたは機関投資家向けヘッジファンドの最高リスク管理責任者です。
+**最優先任務は「XAU/USD（ゴールド）」の精密審査**です。ゴールドは4H・1H・15M・5Mの4時間足すべてを統合し、優位性が極めて高いチャンスがあれば必ず最優先で採用してください。サブ銘柄はゴールド以上に明確な高期待値チャンスがある場合のみ追加（合計最大2銘柄まで）してください。
+どの銘柄もダマシやレンジで危険な場合は、無理に選ばず空配列 `[]` を返してください。
 
 【絶対遵守ルール（約定率最大化＆損小利大）】
-1. **未約定防止**：エントリー価格は必ず「現在値」または「現在値から指定された許容指値幅（±0.35×ATR）以内の浅い押し目・戻り目」に設定すること。遠くの指値は絶対禁止。
-2. **ヒゲ狩りロスカット防止**：損切り（SL）は必ず「最低損切り幅（1.2×ATR）以上」離し、かつ直近15M・1Hの明確なサポレジラインの外側に置くこと。
-3. **損小利大（RR 1:2.2以上）**：利確（TP）までの値幅は、損切り（SL）までの値幅の **必ず2.2倍〜3.0倍** に設定し、手前の4H/1Hスイング高値安値に阻まれないことを確認すること。
-4. **プライスアクション確認**：15M直近3本のローソク足で、エントリー方向への反発（下ヒゲ陽線・上ヒゲ陰線・実体確定）が出ていること。
+1. **未約定防止**：エントリー価格は必ず「現在値（成行）」または「現在値から許容指値幅（0.3×ATR）以内の浅い押し目・戻り目」に設定すること。
+2. **ヒゲ狩り防止**：SLは必ず「最低損切り幅（ゴールドは1.3×ATR、他は1.2×ATR）以上」離し、直近15M・1Hの明確なサポレジの外側に置くこと。
+3. **損小利大（RR 1:2.2以上）**：TPまでの値幅はSL幅の **必ず2.2倍〜3.2倍** に設定し、手前の4H/1Hスイング高値安値に阻まれないこと。
+4. **ゴールドの5Mトリガー確認**：XAU/USDを採用する場合は、5分足と15分足の直近ローソク足（ヒゲ反発や実体ブレイク）でエントリー方向への初動が出ていることを確認すること。
 
 JSON形式のみで出力してください：
 {{
   "opportunities": [
     {{
       "symbol": "XAU/USD",
+      "priority": "最優先VIP",
       "direction": "BUY",
       "order_type": "成行買い または Buy Limit",
       "entry": 2650.50,
-      "tp": 2668.00,
-      "sl": 2642.50,
-      "rr": "1 : 2.2",
-      "confidence": "特A（期待勝率80%超）",
-      "reason": "4H/1H上昇トレンド一致＋ADX強気。15Mで下ヒゲ陽線反発を確認し、ATR基準の損切り外側にSLを配置。"
+      "tp": 2670.00,
+      "sl": 2642.00,
+      "rr": "1 : 2.3",
+      "confidence": "特A（期待勝率82%）",
+      "reason": "4H/1H/15Mすべて上昇トレンド一致。5MでEMA20反発の下ヒゲ陽線を確認し、1.3×ATR外側の15M安値下にSL配置。"
     }}
   ]
 }}
@@ -484,17 +497,18 @@ JSON形式のみで出力してください：
         return
 
     if not opps:
-        print("AI最終審査で基準未達のため見送り（通知スキップ）")
+        print("全銘柄見送り（通知スキップ）")
         save_logs(logs)
         return
 
-    msg_blocks = [f"💎 特選高期待値シグナル（精密MTF審査通過）\n（{current_time.strftime('%m/%d %H:%M')} JST）\n"]
+    msg_blocks = [f"👑 ゴールド最優先・精密MTFシグナル\n（{current_time.strftime('%m/%d %H:%M')} JST）\n"]
     for op in opps:
         sym = op["symbol"]
         dir_jp = "買い（BUY）" if op["direction"] == "BUY" else "売り（SELL）"
+        badge = "👑【最優先ゴールド】" if sym == "XAU/USD" else f"🎯【サブ特選：{sym}】"
         block = (
             f"━━━━━━━━━━━━━━━━\n"
-            f"🎯 【{sym}】 {dir_jp}｜{op.get('confidence', '高')}\n"
+            f"{badge} {dir_jp}｜{op.get('confidence', '高')}\n"
             f"・注文方法：{op.get('order_type', op['direction'])}\n"
             f"・エントリー：{op['entry']}\n"
             f"・利確（TP）：{op['tp']}\n"
