@@ -30,6 +30,23 @@ EVOLUTION_FILE = "ai_evolution.json"
 
 
 # ==============================================================================
+# Gemini 呼び出し（429レート制限時の自動待機・リトライ付き）
+# ==============================================================================
+def generate_with_retry(prompt, retries=3):
+    model = genai.GenerativeModel(MODEL_NAME)
+    for attempt in range(retries):
+        try:
+            resp = model.generate_content(prompt)
+            return resp.text.strip()
+        except Exception as e:
+            if "429" in str(e) and attempt < retries - 1:
+                print(f"[Gemini RateLimit] 1分上限のため65秒待機して再試行します... ({attempt + 1}/{retries})")
+                time.sleep(65)
+            else:
+                raise e
+
+
+# ==============================================================================
 # 1. JSON データ読み書き
 # ==============================================================================
 def load_json(path, default_data):
@@ -98,7 +115,6 @@ def fetch_candles(symbol, interval, outputsize=60):
             req = urllib.request.urlopen(url, timeout=15)
             data = json.loads(req.read().decode("utf-8"))
             if "values" in data:
-                # 古い順（時系列昇順）に並べ替え
                 return list(reversed(data["values"]))
             if data.get("code") == 429 and attempt == 0:
                 print(f"[RateLimit] {symbol} {interval} - 62秒待機します...")
@@ -110,7 +126,7 @@ def fetch_candles(symbol, interval, outputsize=60):
 
 def analyze_symbol_market(symbol, is_vip=False):
     c_1h = fetch_candles(symbol, "1h", 60)
-    time.sleep(8)  # 無料枠8req/min対策
+    time.sleep(8)
     c_15m = fetch_candles(symbol, "15min", 60)
     time.sleep(8)
     c_5m = fetch_candles(symbol, "5min", 40) if is_vip else []
@@ -127,13 +143,11 @@ def analyze_symbol_market(symbol, is_vip=False):
     closes_15m = [float(x["close"]) for x in c_15m]
     current_price = closes_15m[-1]
 
-    # 直近24時間高値・安値（壁チェック用）
     recent_24h_high = max(highs_1h[-24:]) if len(highs_1h) >= 24 else max(highs_1h)
     recent_24h_low = min(lows_1h[-24:]) if len(lows_1h) >= 24 else min(lows_1h)
     swing_6h_high = max(highs_1h[-6:])
     swing_6h_low = min(lows_1h[-6:])
 
-    # ラウンドナンバー（心理的節目）計算
     step = 10.0 if "XAU" in symbol else (0.5 if "JPY" in symbol else 0.005)
     upper_round = math.ceil(current_price / step) * step
     lower_round = math.floor(current_price / step) * step
@@ -232,9 +246,8 @@ def fetch_economic_calendar():
 # 4. 市場オープン・土日判定
 # ==============================================================================
 def is_weekend_closed(now_jst):
-    wd = now_jst.weekday()  # 0:月 〜 4:金, 5:土, 6:日
+    wd = now_jst.weekday()
     hr = now_jst.hour
-    # 土曜 07:00 〜 月曜 06:59 を土日休場とみなす
     if wd == 5 and hr >= 7:
         return True
     if wd == 6:
@@ -268,7 +281,6 @@ def check_positions_and_evolve(trade_log, evolution_data, latest_prices, news_su
         result = None
         close_price = cur
 
-        # 利確・損切りライン到達のみで取引終了判定
         if direction == "BUY":
             if cur >= tp:
                 result = "WIN"
@@ -294,7 +306,6 @@ def check_positions_and_evolve(trade_log, evolution_data, latest_prices, news_su
             newly_closed.append(pos)
             closed_history.append(pos)
         else:
-            # 含み損益・TP/SLまでの残り距離を更新
             unrealized = (cur - entry) if direction == "BUY" else (entry - cur)
             pos["current_price"] = round(cur, 4)
             pos["unrealized_pnl"] = round(unrealized, 4)
@@ -305,7 +316,6 @@ def check_positions_and_evolve(trade_log, evolution_data, latest_prices, news_su
     trade_log["open_positions"] = still_open
     trade_log["closed_history"] = closed_history
 
-    # 連敗カウント再計算
     consecutive_losses = 0
     for item in reversed(closed_history):
         if item.get("result") == "LOSS":
@@ -315,7 +325,6 @@ def check_positions_and_evolve(trade_log, evolution_data, latest_prices, news_su
     evolution_data["consecutive_losses"] = consecutive_losses
     evolution_data["strict_mode"] = True if consecutive_losses >= 2 else False
 
-    # 決着したトレードがあれば5分類タグ解剖＆ルール進化を実行
     evolution_reports = []
     for closed_pos in newly_closed:
         evo_prompt = f"""
@@ -370,9 +379,7 @@ def check_positions_and_evolve(trade_log, evolution_data, latest_prices, news_su
 }}
 """
         try:
-            model = genai.GenerativeModel(MODEL_NAME)
-            resp = model.generate_content(evo_prompt)
-            raw = resp.text.strip().replace("```json", "").replace("```", "").strip()
+            raw = generate_with_retry(evo_prompt).replace("```json", "").replace("```", "").strip()
             parsed = json.loads(raw)
 
             tag = parsed.get("primary_failure_tag", "NONE")
@@ -413,7 +420,6 @@ def send_line_message(text):
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
     }
-    # LINEの文字数上限(5000文字)対策で分割送信
     chunks = [text[i:i + 4500] for i in range(0, len(text), 4500)]
     for chunk in chunks:
         payload = json.dumps({
@@ -431,9 +437,8 @@ def send_line_message(text):
 # 7. 土日専用：週末集中学習＆来週の作戦レポート実行
 # ==============================================================================
 def run_weekend_study_mode(trade_log, evolution_data):
-    # 土日は3時間に1回裏側で知識更新し、日曜夜21時台にLINEへレポート配信
     hr = NOW_JST.hour
-    wd = NOW_JST.weekday()  # 5:土, 6:日
+    wd = NOW_JST.weekday()
     if hr % 3 != 0:
         print(f"[Weekend] {NOW_JST.strftime('%H:%M')} は週末待機スロットのためスキップ")
         return
@@ -500,9 +505,7 @@ def run_weekend_study_mode(trade_log, evolution_data):
 **4. 🎯 来週のサブ6通貨ペアの注目銘柄と戦略**
 （相関ダブりを避けた来週の最注目通貨ペアと具体的な狙い目を詳しく記載）
 """
-    model = genai.GenerativeModel(MODEL_NAME)
-    resp = model.generate_content(weekend_prompt)
-    full_text = resp.text.strip()
+    full_text = generate_with_retry(weekend_prompt)
 
     report_text = full_text
     if "===EVOLUTION_JSON_START===" in full_text and "===EVOLUTION_JSON_END===" in full_text:
@@ -519,7 +522,6 @@ def run_weekend_study_mode(trade_log, evolution_data):
         except Exception as e:
             print(f"[Weekend JSON Parse Error] {e}")
 
-    # 日曜夜21時台（または土曜朝9時台）にLINEへ学習レポートを配信
     if (wd == 6 and hr == 21) or (wd == 5 and hr == 9):
         send_line_message(report_text)
     else:
@@ -546,10 +548,8 @@ def run_weekday_analysis(trade_log, evolution_data):
     )
     calendar_data = fetch_economic_calendar()
 
-    # 1. まず保有ポジションのTP/SL到達チェック＆5分類敗因学習を実行
     evo_reports = check_positions_and_evolve(trade_log, evolution_data, latest_prices, news_headlines)
 
-    # 2. 戦績サマリー計算
     closed = trade_log.get("closed_history", [])
     wins = sum(1 for x in closed if x.get("result") == "WIN")
     losses = sum(1 for x in closed if x.get("result") == "LOSS")
@@ -565,7 +565,6 @@ def run_weekday_analysis(trade_log, evolution_data):
         "evolution_rules": evolution_data,
     }
 
-    # 3. メイン分析プロンプト（1時間通知 ＆「今は？」完全共通仕様）
     main_prompt = f"""
 あなたはプロ機関投資家レベルの専属FX・ゴールド（XAU/USD）ディーラー兼AIアナリストです。
 ユーザーはあなたの提示したトレード判断を信頼して実戦の参考にします。表面的な一言コメントは厳禁とし、チャート構造・世界情勢・米ドル強弱・価格設定の理由・過去の学習ルールまで、根拠を具体的かつ詳しく言語化して回答してください。
@@ -666,9 +665,7 @@ def run_weekday_analysis(trade_log, evolution_data):
 **② 今の相場状況＆次の一手（相関ダブり防止・最良1銘柄厳選）**
 - サブ6通貨ペア全体の地合いを解説し、優位なチャンスがあれば相関ダブりを避けた**最良の1銘柄だけ**について短期（1〜3時間・浅い指値・鮮度45〜60分）のエントリー・TP・SL・壁チェック・詳しい判断根拠（乗り遅れ向け対応含む）を記載。なければ「現在、サブ6通貨ペアに無理に入るべき優位な場面はありません（様子見）」とその理由を詳しく記載。
 """
-    model = genai.GenerativeModel(MODEL_NAME)
-    resp = model.generate_content(main_prompt)
-    full_text = resp.text.strip()
+    full_text = generate_with_retry(main_prompt)
 
     message_body = full_text
     if "===SIGNALS_JSON_START===" in full_text and "===SIGNALS_JSON_END===" in full_text:
