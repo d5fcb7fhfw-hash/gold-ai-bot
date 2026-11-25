@@ -6,7 +6,7 @@ import datetime
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
-import google.generativeai as genai
+from google import genai
 
 # ==============================================================================
 # 環境変数（GitHub Secrets に設定）
@@ -16,8 +16,17 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_CANDIDATES = ["gemini-3.8-flash", "gemini-3.8-flash-lite"]
+
+JST = datetime.timezone(datetime.timedelta(hours=9))
+NOW_JST = datetime.datetime.now(JST)
+
+GOLD_SYMBOL = "XAU/USD"
+SUB_PAIRS = ["USD/JPY", "EUR/USD", "GBP/JPY", "GBP/USD", "EUR/JPY", "AUD/USD"]
+
+TRADE_LOG_FILE = "trade_log.json"
+EVOLUTION_FILE = "ai_evolution.json"
 
 
 # ==============================================================================
@@ -25,10 +34,12 @@ MODEL_CANDIDATES = ["gemini-3.8-flash", "gemini-3.8-flash-lite"]
 # ==============================================================================
 def generate_with_retry(prompt, retries=2):
     for model_name in MODEL_CANDIDATES:
-        model = genai.GenerativeModel(model_name)
         for attempt in range(retries):
             try:
-                resp = model.generate_content(prompt)
+                resp = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                )
                 return resp.text.strip()
             except Exception as e:
                 err_str = str(e)
@@ -438,7 +449,7 @@ def send_line_message(text):
 def run_weekend_study_mode(trade_log, evolution_data):
     hr = NOW_JST.hour
     wd = NOW_JST.weekday()
-    if hr % 3 != 0:
+    if hr % 4 != 0 and not (wd == 6 and hr == 22) and not (wd == 5 and hr == 10):
         print(f"[Weekend] {NOW_JST.strftime('%H:%M')} は週末待機スロットのためスキップ")
         return
 
@@ -521,14 +532,14 @@ def run_weekend_study_mode(trade_log, evolution_data):
         except Exception as e:
             print(f"[Weekend JSON Parse Error] {e}")
 
-    if (wd == 6 and hr == 21) or (wd == 5 and hr == 9):
+    if (wd == 6 and hr in [20, 21, 22]) or (wd == 5 and hr in [8, 9, 10]):
         send_line_message(report_text)
     else:
         print("[Weekend] 知識アップデート完了（LINE配信時間外のため保存のみ）")
 
 
 # ==============================================================================
-# 8. 平日メイン分析（1時間ごとの自動通知・全件約定記録）
+# 8. 平日メイン分析（定期自動通知・全件約定記録）
 # ==============================================================================
 def run_weekday_analysis(trade_log, evolution_data):
     gold_data = analyze_symbol_market(GOLD_SYMBOL, is_vip=True)
