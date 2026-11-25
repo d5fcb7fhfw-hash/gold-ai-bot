@@ -1,0 +1,11 @@
+[
+  {
+    "timestamp": "2026-11-25 17:10:31",
+    "direction": "BUY",
+    "entry": 3512.0,
+    "tp": 3552.0,
+    "sl": 3492.0,
+    "status": "PENDING",
+    "pnl": 0.0
+  }
+]
