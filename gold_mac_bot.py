@@ -448,7 +448,6 @@ def check_positions_and_evolve(trade_log, evolution_data, market_snapshots, news
         entry = float(pos["entry_price"])
         status = pos.get("status", "OPEN")
 
-        # ステップA：PENDING（指値待機中）の約定判定（スプレッド考慮）
         if status == "PENDING":
             filled = False
             if direction == "BUY" and (low_2h <= (entry - spread * 0.5) or cur <= (entry - spread * 0.5)):
@@ -474,7 +473,6 @@ def check_positions_and_evolve(trade_log, evolution_data, market_snapshots, news
                 still_active.append(pos)
                 continue
 
-        # ステップB：OPEN（保有中）のTP/SL到達判定（スプレッド誤差補正付き）
         result = None
         close_price = cur
 
@@ -507,7 +505,6 @@ def check_positions_and_evolve(trade_log, evolution_data, market_snapshots, news
             target_dist = abs(tp - entry)
             progress_pct = round((unrealized / target_dist) * 100, 1) if target_dist > 0 else 0.0
 
-            # ステップC：建値保護（ブレークイーブン）＆分割利確アラート（TPの50%以上進捗時）
             be_advice = "通常ホールド継続"
             if progress_pct >= 50.0 and not pos.get("breakeven_triggered", False):
                 pos["breakeven_triggered"] = True
@@ -684,7 +681,7 @@ def run_weekend_study_mode(trade_log, evolution_data):
 
 
 # ==============================================================================
-# 9. 平日メイン分析（利益最大化プロ仕様・RR強制検証・指標ロック・建値管理）
+# 9. 平日メイン分析（LINEで提示した新規指値・エントリーをすべて新規取引登録）
 # ==============================================================================
 def run_weekday_analysis(trade_log, evolution_data):
     gold_data = analyze_symbol_market(GOLD_SYMBOL, is_vip=True)
@@ -738,11 +735,11 @@ def run_weekday_analysis(trade_log, evolution_data):
 ================================================================
 【BLOCK 2：利益最大化のための数学的・構造的絶対条件】
 ================================================================
-1. リスクリワード比（RR）1 : 1.5 以上の絶対厳守：
-   - すべての新規エントリー提案は、必ず「利確までの値幅（|TP - Entry|） ÷ 損切りまでの値幅（|Entry - SL|） ≧ 1.5」を満たすように設計すること（理想は 1.8〜2.5）。
-   - 壁（24H高値・安値・ラウンドナンバー）が近すぎて RR 1.5 以上を確保できない場合は、無理に入らず必ず「見送り（静観）」とすること。
+1. リスクリワード比（RR） 1 : 1.5 以上の絶対厳守：
+   - すべての新規指値注文・新規エントリー提案は、必ず「利確までの値幅（|TP - Entry|） ÷ 損切りまでの値幅（|Entry - SL|） ≧ 1.5」を満たすように設計すること。
+   - もしRR 1.5未満になる場合は、無理に指値やエントリーを提示せず「見送り（静観）」とすること。
 2. スプレッド誤差の事前織り込み：
-   - XMTrading等の実口座スプレッド（GOLDは約0.35ドル、JPYペアは約0.03円）を考慮し、SLは直近ヒゲの少し外側へ余裕を持たせ、TPは壁の少し手前に設定すること。
+   - XMTrading等の実口座スプレッドを考慮し、SLは直近ヒゲの少し外側へ余裕を持たせ、TPは壁の少し手前に設定すること。
 3. 建値保護（ブレークイーブン）＆分割利確ルール：
    - 保有中ポジションの含み益がTPの50%以上に到達した場合、SLを建値へ移動して負けゼロを確定させ、半分利確して残りを伸ばす指示を出すこと。
 4. 指標ロック＆早朝スプレッド拡大ロック：
@@ -772,11 +769,11 @@ def run_weekday_analysis(trade_log, evolution_data):
 - 累計戦績＆5分類敗因タグ学習済み進化ルール：{json.dumps(stats_block, ensure_ascii=False)}
 
 ================================================================
-【BLOCK 5：出力フォーマット（システム登録用JSON ＋ LINE配信テキスト）】
+【BLOCK 5：出力フォーマット（新規取引の完全同期ルール）】
 ================================================================
-【超重要・厳守】
-レポート本文で「新規指値エントリー推奨」または「押し目・戻り目待機（具体的な指値価格・TP・SLを提示）」を出した場合は、**必ずその同じ銘柄・同じ指値価格・TP・SLを最初の `===SIGNALS_JSON_START===` 内にJSONとして出力してください！**
-（※なお、システム側でも RR 1.45未満のシグナルや指標ロック中のシグナルは自動除外されます）
+【絶対厳守】
+LINEレポート本文で「新規指値注文（指値エントリー推奨・押し目/戻り目待機で具体的な指値価格・TP・SLを提示）」または「新規エントリー推奨」を出したものは、**すべて「新規取引」として扱い、必ず最初の `===SIGNALS_JSON_START===` 内にJSONとして出力してください！**
+本文に具体的な指値価格・TP・SLを書いたのにJSONへ入れないことは絶対に禁止します。完全見送りの場合のみ空配列 `[]` としてください。
 
 ===SIGNALS_JSON_START===
 [
@@ -826,21 +823,23 @@ def run_weekday_analysis(trade_log, evolution_data):
     full_text = generate_with_retry(main_prompt)
 
     message_body = full_text
+    registered_count = 0
     if "===SIGNALS_JSON_START===" in full_text and "===SIGNALS_JSON_END===" in full_text:
         sig_raw = full_text.split("===SIGNALS_JSON_START===")[1].split("===SIGNALS_JSON_END===")[0].strip()
         message_body = full_text.split("===SIGNALS_JSON_END===")[1].strip()
         try:
             new_signals = json.loads(sig_raw)
-            existing_keys = {(p["symbol"], p["direction"]) for p in trade_log.get("open_positions", [])}
+            existing_keys = {(p["symbol"], p["direction"], round(float(p["entry_price"]), 2)) for p in trade_log.get("open_positions", [])}
             for sig in new_signals:
                 if indicator_lock or not session_info["entry_allowed"]:
                     print(f"[Filter Skip] 指標ロックまたは時間帯制限のため新規登録をブロック: {sig.get('symbol')}")
                     continue
 
-                key = (sig["symbol"], sig["direction"])
                 entry_val = float(sig.get("entry_price", 0))
                 tp_val = float(sig.get("tp", 0))
                 sl_val = float(sig.get("sl", 0))
+                if entry_val <= 0 or tp_val <= 0 or sl_val <= 0:
+                    continue
 
                 reward = abs(tp_val - entry_val)
                 risk = abs(entry_val - sl_val)
@@ -850,7 +849,8 @@ def run_weekday_analysis(trade_log, evolution_data):
                     print(f"[RR Filter Skip] {sig.get('symbol')} RR={rr_ratio:.2f} のため期待値不足でスキップ")
                     continue
 
-                if key not in existing_keys and entry_val > 0:
+                dedup_key = (sig["symbol"], sig["direction"], round(entry_val, 2))
+                if dedup_key not in existing_keys:
                     snap = market_snapshots.get(sig["symbol"], {})
                     cur_val = float(snap.get("current_price", entry_val))
                     high_2h = float(snap.get("recent_2h_high", cur_val))
@@ -863,9 +863,7 @@ def run_weekday_analysis(trade_log, evolution_data):
                     elif sig["direction"] == "SELL" and (cur_val >= (entry_val + spread * 0.5) or high_2h >= (entry_val + spread * 0.5)):
                         is_already_filled = True
 
-                    trade_id = f"{sig['symbol'].replace('/', '')}_{sig['direction']}_{NOW_JST.strftime('%Y%m%d%H%M')}"
                     trade_log["open_positions"].append({
-                        "trade_id": trade_id,
                         "symbol": sig["symbol"],
                         "timeframe_type": sig.get("timeframe_type", "短期デイトレ（1〜3時間・浅い指値）"),
                         "direction": sig["direction"],
@@ -880,12 +878,15 @@ def run_weekday_analysis(trade_log, evolution_data):
                         "opened_at": NOW_JST.strftime("%Y-%m-%d %H:%M JST"),
                         "status": "OPEN" if is_already_filled else "PENDING",
                     })
-                    existing_keys.add(key)
+                    existing_keys.add(dedup_key)
+                    registered_count += 1
             save_json(TRADE_LOG_FILE, trade_log)
         except Exception as e:
             print(f"[Signal JSON Parse Error] {e}")
 
     header = f"⏰ 【定期AI相場レポート】{NOW_JST.strftime('%m/%d %H:%M')} JST\n"
+    if registered_count > 0:
+        header += f"📝 新規取引 {registered_count}件 をシステム登録しました（指値到達で自動約定・TP/SLで自動決着）\n"
     if indicator_lock:
         header += f"{indicator_lock_reason}\n\n"
     if evo_reports:
