@@ -55,33 +55,33 @@ def get_market_session_info(now_jst):
 
     if 5.5 <= t_val < 7.5:
         return {
-            "session": "早朝ロールオーバー・スプレッド極大拡大帯（05:30〜07:30 JST）",
+            "session": "早朝スプレッド拡大帯（05:30〜07:30 JST）",
             "entry_allowed": False,
-            "advice": "XMTrading等でスプレッドが異常拡大しヒゲ狩りが多発するため新規エントリー厳禁。保有中はSL拡大に警戒。",
+            "advice": "スプレッド異常拡大のため新規厳禁。",
         }
     elif 7.5 <= t_val < 15.5:
         return {
-            "session": "東京・アジア時間（07:30〜15:30 JST）",
+            "session": "東京時間（07:30〜15:30 JST）",
             "entry_allowed": True,
-            "advice": "実需中心でレンジになりやすい時間帯。高値・安値への飛び乗りブレイクは避け、サポレジ引きつけの浅い指値を優先。",
+            "advice": "レンジになりやすいためサポレジ引きつけの浅い指値優先。",
         }
     elif 15.5 <= t_val < 21.0:
         return {
-            "session": "欧州・ロンドン市場時間（15:30〜21:00 JST）",
+            "session": "ロンドン時間（15:30〜21:00 JST）",
             "entry_allowed": True,
-            "advice": "大口機関投資家が参入し東京時間の高値・安値を一度狩ってから本命トレンドが出やすい時間帯。流動性スイープ後の押し目・戻り目を狙う。",
+            "advice": "大口のストップ狩り後の本命トレンド順張り狙い。",
         }
     elif 21.0 <= t_val or t_val < 2.0:
         return {
-            "session": "NY市場・ロンドン重複ゴールデンタイム（21:00〜02:00 JST）",
+            "session": "NYゴールデンタイム（21:00〜02:00 JST）",
             "entry_allowed": True,
-            "advice": "1日で最も出来高と値幅が出る時間帯。順張りトレンドフォローが最も機能しやすいが、指標発表前後は急変に注意。",
+            "advice": "最大出来高帯。トレンド順張り優位。",
         }
     else:
         return {
-            "session": "NY後半・流動性低下帯（02:00〜05:30 JST）",
+            "session": "NY後半（02:00〜05:30 JST）",
             "entry_allowed": True,
-            "advice": "出来高が細り値動きが鈍化しやすい時間帯。新規は厳選し、保有ポジションは早朝スプレッド拡大前の利確・建値保護を検討。",
+            "advice": "出来高低下帯。新規厳選・建値保護優先。",
         }
 
 
@@ -337,11 +337,11 @@ def calc_usd_strength_index(fx_data_list):
 
     usd_score = round((usdjpy_chg - eurusd_chg) / 2.0, 3)
     if usd_score >= 0.12:
-        bias = "明確な米ドル全面高（GOLDには強い逆風・売り優位）"
+        bias = "米ドル全面高（GOLD逆風・売り優位）"
     elif usd_score <= -0.12:
-        bias = "明確な米ドル全面安（GOLDには強い追い風・買い優位）"
+        bias = "米ドル全面安（GOLD追い風・買い優位）"
     else:
-        bias = "米ドル方向感中立（レンジ・個別材料主導）"
+        bias = "米ドル中立"
 
     return {
         "usd_strength_score_1h": usd_score,
@@ -375,7 +375,7 @@ def fetch_google_news(queries, limit_per_query=4):
 def fetch_economic_calendar_and_lock():
     url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
     lock_active = False
-    lock_reason = "直近30分以内に重要指標の発表はありません（通常稼働OK）。"
+    lock_reason = "指標ロックなし"
     high_events = []
 
     try:
@@ -387,7 +387,7 @@ def fetch_economic_calendar_and_lock():
             date_str = ev.get("date", "")
             if impact in ["High", "Medium"] and country in ["USD", "JPY", "EUR", "GBP", "AUD"]:
                 high_events.append(
-                    f"- [{country}] {ev.get('title')} | 日時(UTC): {date_str} | 重要度: {impact} | 予想: {ev.get('forecast')} / 前回: {ev.get('previous')}"
+                    f"- [{country}] {ev.get('title')} | {date_str} | {impact}"
                 )
             if impact == "High" and country in ["USD", "JPY", "EUR"] and date_str:
                 try:
@@ -395,11 +395,11 @@ def fetch_economic_calendar_and_lock():
                     diff_min = (ev_dt - NOW_UTC).total_seconds() / 60.0
                     if -15.0 <= diff_min <= 35.0:
                         lock_active = True
-                        lock_reason = f"⚠️【重要指標ロック発動中】[{country}] {ev.get('title')} が約{int(diff_min)}分後に発表（または直後）のため、新規エントリーを強制禁止します。保有ポジションは建値保護・縮小を推奨。"
+                        lock_reason = f"⚠️【指標ロック】[{country}] {ev.get('title')}（約{int(diff_min)}分前後）のため新規禁止"
                 except Exception:
                     pass
     except Exception as e:
-        return f"指標カレンダー取得エラー: {e}", False, lock_reason
+        return f"指標取得エラー: {e}", False, lock_reason
 
     cal_text = "\n".join(high_events[:20]) if high_events else "直近の主要指標情報なし"
     return cal_text, lock_active, lock_reason
@@ -459,7 +459,7 @@ def check_positions_and_evolve(trade_log, evolution_data, market_snapshots, news
                 pos["status"] = "OPEN"
                 pos["filled_at"] = NOW_JST.strftime("%Y-%m-%d %H:%M JST")
                 status = "OPEN"
-                status_notices.append(f"✅【指値約定】{sym} ({direction}) が指値 {entry} に到達しポジション保有を開始しました。")
+                status_notices.append(f"✅ 約定: {sym} {direction} @{entry}")
             else:
                 try:
                     opened_dt = datetime.datetime.strptime(pos["opened_at"].replace(" JST", ""), "%Y-%m-%d %H:%M").replace(tzinfo=JST)
@@ -467,7 +467,7 @@ def check_positions_and_evolve(trade_log, evolution_data, market_snapshots, news
                 except Exception:
                     elapsed_min = 0
                 if elapsed_min > 70:
-                    status_notices.append(f"⏳【鮮度切れキャンセル】{sym} ({direction}) 指値 {entry} は60分経過のため未約定キャンセルしました。")
+                    status_notices.append(f"⏳ 失効キャンセル: {sym} {direction} @{entry}")
                     continue
                 pos["current_price"] = round(cur, 4)
                 still_active.append(pos)
@@ -505,21 +505,16 @@ def check_positions_and_evolve(trade_log, evolution_data, market_snapshots, news
             target_dist = abs(tp - entry)
             progress_pct = round((unrealized / target_dist) * 100, 1) if target_dist > 0 else 0.0
 
-            be_advice = "通常ホールド継続"
             if progress_pct >= 50.0 and not pos.get("breakeven_triggered", False):
                 pos["breakeven_triggered"] = True
                 pos["sl"] = round(entry, 4)
-                be_advice = f"🛡️【建値移動・半分利確推奨】TPまで{progress_pct}%到達！SLを建値({entry})へ移動し負けゼロを確定させてください。"
-                status_notices.append(f"🛡️【建値移動発動】{sym} ({direction}) が目標の{progress_pct}%まで伸びたため、SLを建値({entry})へ引き上げました。")
-            elif pos.get("breakeven_triggered", False):
-                be_advice = f"🛡️ 建値保護済み（SL={entry}で負けゼロ確定・残りTP狙い）"
+                status_notices.append(f"🛡️ 建値移動: {sym} {direction}（TPの{progress_pct}%到達 → SLを{entry}へ引き上げ）")
 
             pos["current_price"] = round(cur, 4)
             pos["unrealized_pnl"] = round(unrealized, 4)
             pos["tp_progress_percent"] = progress_pct
             pos["dist_to_tp"] = round(abs(tp - cur), 4)
             pos["dist_to_sl"] = round(abs(cur - float(pos["sl"])), 4)
-            pos["management_advice"] = be_advice
             still_active.append(pos)
 
     trade_log["open_positions"] = still_active
@@ -538,7 +533,7 @@ def check_positions_and_evolve(trade_log, evolution_data, market_snapshots, news
     for closed_pos in newly_closed:
         evo_prompt = f"""
 あなたは自己進化型AIトレーディングシステムの「戦績解剖・ルール改善エンジン」です。
-たった今、以下の仮想トレードが取引終了（決着）となりました。結果を冷徹に解剖し「進化ルール」を更新してください。
+決着した仮想トレードを内部で徹底解剖し、進化ルールを更新してください。
 
 - 銘柄：{closed_pos['symbol']} / 方向：{closed_pos['direction']} / 時間軸：{closed_pos.get('timeframe_type', '')}
 - エントリー → 決着：{closed_pos['entry_price']} → {closed_pos['close_price']} / 結果：{closed_pos['result']} ({closed_pos['pnl']:+})
@@ -552,8 +547,8 @@ def check_positions_and_evolve(trade_log, evolution_data, market_snapshots, news
 {{
   "win_or_loss": "{closed_pos['result']}",
   "primary_failure_tag": "LOSSの場合は TAG_1〜TAG_5 のいずれか（WINの場合は NONE）",
-  "analysis_summary": "なぜ勝てたか／なぜ負けたかの詳しい解剖コメント",
-  "new_or_updated_rule": "次回以降の判断プロンプトへ反映する具体的な改善ルール",
+  "analysis_summary": "勝因・敗因の要約（1文）",
+  "new_or_updated_rule": "次回以降の判断へ反映する改善ルール（1文）",
   "gold_short_rules": ["更新後のGOLD短期ルールリスト（最大6個）"],
   "gold_long_rules": ["更新後のGOLD超厳選長期ルールリスト（最大4個）"],
   "fx_pairs_rules": ["更新後のサブ6通貨ペア共通ルールリスト（最大6個）"]
@@ -576,10 +571,7 @@ def check_positions_and_evolve(trade_log, evolution_data, market_snapshots, news
             closed_pos["post_analysis"] = parsed.get("analysis_summary", "")
 
             evolution_reports.append(
-                f"📌【決着＆自己進化】{closed_pos['symbol']} ({closed_pos['direction']}) → {closed_pos['result']} ({closed_pos['pnl']:+})\n"
-                f"・分類タグ: {tag}\n"
-                f"・解剖: {parsed.get('analysis_summary')}\n"
-                f"・新ルール反映: {parsed.get('new_or_updated_rule')}"
+                f"📌 決着: {closed_pos['symbol']} {closed_pos['direction']} → {closed_pos['result']} ({closed_pos['pnl']:+}) [{tag}]"
             )
         except Exception as e:
             print(f"[Evolution Parse Error] {e}")
@@ -615,7 +607,7 @@ def send_line_message(text):
 
 
 # ==============================================================================
-# 8. 土日専用：週末集中学習＆来週の作戦レポート実行
+# 8. 土日専用：週末集中学習（内部学習はフル実行・LINEは超簡潔）
 # ==============================================================================
 def run_weekend_study_mode(trade_log, evolution_data):
     hr = NOW_JST.hour
@@ -631,31 +623,28 @@ def run_weekend_study_mode(trade_log, evolution_data):
     calendar_data, _, _ = fetch_economic_calendar_and_lock()
 
     weekend_prompt = f"""
-あなたは週末集中学習モードで稼働中の「自己進化型AIトレーディング研究官」です。
-土日休場時間を使って「①過去の全トレードデータの徹底振り返り」と「②外部のトレーダー・アナリスト見解および来週の市場テーマの学習」を行い、月曜朝7時の市場オープンに向けた知識と戦略をアップデートしてください。
+あなたは週末集中学習モードのAIトレーディング研究官です。
+内部で過去の全トレードデータと週間ニュース・指標を深く分析して進化ルールを更新したうえで、LINE送信用の文章は【超簡潔（5〜8行程度）】にまとめてください。
 
-- 学習実行日時（日本時間）：{NOW_JST.strftime('%Y-%m-%d %H:%M JST')}
-- 累計の全件約定トレード履歴：{json.dumps(trade_log.get('closed_history', [])[-30:], ensure_ascii=False)}
-- 5分類敗因タグの累計データと現在の進化ルール帳：{json.dumps(evolution_data, ensure_ascii=False)}
-- 土日に収集した週間見通しニュース：
-{analyst_news}
-- 来週の重要経済指標カレンダー：
-{calendar_data}
-- 金曜クローズ時点の持ち越しポジション：{json.dumps(trade_log.get('open_positions', []), ensure_ascii=False)}
-
-最初に必ず `===EVOLUTION_JSON_START===` と `===EVOLUTION_JSON_END===` で囲んで更新後の進化ルールJSONを出力し、その後にLINE送信用の「📚 週末の集中学習＆来週の作戦レポート」を詳しく書いてください。
+- 累計トレード履歴：{json.dumps(trade_log.get('closed_history', [])[-30:], ensure_ascii=False)}
+- 現在の進化ルール：{json.dumps(evolution_data, ensure_ascii=False)}
+- 週間ニュース：{analyst_news}
+- 来週の指標：{calendar_data}
+- 持ち越しポジション：{json.dumps(trade_log.get('open_positions', []), ensure_ascii=False)}
 
 ===EVOLUTION_JSON_START===
 {{
-  "weekend_market_outlook": "来週の相場テーマ・トレーダー意識価格帯の要約",
+  "weekend_market_outlook": "来週の相場テーマ・意識価格帯の要約",
   "gold_short_rules": ["更新後のGOLD短期ルールリスト"],
   "gold_long_rules": ["更新後のGOLD超厳選長期ルールリスト"],
   "fx_pairs_rules": ["更新後のサブ6通貨ペア共通ルールリスト"]
 }}
 ===EVOLUTION_JSON_END===
 
-### 📚 週末の集中学習＆来週の作戦レポート
-（1.今週の振り返り＆新ルール / 2.外部トレーダー見解＆市場テーマ / 3.GOLD来週の狙い方 / 4.サブ6通貨ペア注目銘柄 を詳しく記載）
+📚【週末学習完了】
+・来週のGOLD目線：（2行以内で簡潔に）
+・来週の注目通貨：（1行で簡潔に）
+・持ち越し対応：（1行で簡潔に）
 """
     full_text = generate_with_retry(weekend_prompt)
 
@@ -681,7 +670,7 @@ def run_weekend_study_mode(trade_log, evolution_data):
 
 
 # ==============================================================================
-# 9. 平日メイン分析（LINEで提示した新規指値・エントリーをすべて新規取引登録）
+# 9. 平日メイン分析（内部分析はフルスペック・LINE出力は超簡潔）
 # ==============================================================================
 def run_weekday_analysis(trade_log, evolution_data):
     gold_data = analyze_symbol_market(GOLD_SYMBOL, is_vip=True)
@@ -709,12 +698,14 @@ def run_weekday_analysis(trade_log, evolution_data):
     wins = sum(1 for x in closed if x.get("result") == "WIN")
     losses = sum(1 for x in closed if x.get("result") == "LOSS")
     win_rate = round((wins / len(closed)) * 100, 1) if closed else 0.0
+    total_realized_pnl = round(sum(float(x.get("pnl", 0)) for x in closed), 2)
 
     stats_block = {
         "total_trades": len(closed),
         "wins": wins,
         "losses": losses,
         "win_rate_percent": win_rate,
+        "total_realized_pnl": total_realized_pnl,
         "consecutive_losses": evolution_data.get("consecutive_losses", 0),
         "strict_mode_active": evolution_data.get("strict_mode", False),
         "evolution_rules": evolution_data,
@@ -722,59 +713,25 @@ def run_weekday_analysis(trade_log, evolution_data):
 
     main_prompt = f"""
 あなたはプロ機関投資家レベルの専属FX・ゴールド（XAU/USD）ディーラー兼AIアナリストです。
-最優先目標は「トータル利益の最大化（高いリスクリワード比と期待値プラスの徹底）」です。表面的な一言コメントは厳禁とし、4H/1H/15M/5Mチャート構造・米ドル強弱スコア・市場時間帯・大口投資家動向・価格設定の数学的根拠まで詳しく言語化して回答してください。
 
-================================================================
-【BLOCK 1：監視対象と分離出力の絶対ルール】
-================================================================
-1. 最優先VIP銘柄は「XAU/USD（ゴールド）」とする。
-2. サブ監視銘柄は「USD/JPY, EUR/USD, GBP/JPY, GBP/USD, EUR/JPY, AUD/USD」の主要6通貨ペアとする。
-3. 回答は必ず「👑 1. GOLD（XAU/USD）の取引判断」と「🎯 2. それ以外（サブ6通貨ペア）の取引判断」の2大セクションに完全に分けて出力すること。
-4. サブ6通貨ペアの相関ダブり防止ルール：通貨強弱の重複を厳禁とし、最も期待値が高い「最良の1銘柄だけ」に厳選すること。優位な場面がなければ「見送り（様子見）」と明記すること。
+【重要方針：思考は深く、LINE出力は超簡潔に】
+1. 内部での分析は、4H/1H/15M/5Mチャート構造・サポレジ壁との距離・米ドル強弱スコア・市場セッション・大口投資家の流動性スイープ・スプレッド誤差・リスクリワード比（RR 1:1.5以上必須）・5分類敗因学習ルール・2連敗ブレーキ・指標ロックをすべて厳密に計算して行うこと。
+2. ただし、ユーザーに送るLINEメッセージ本文は長文解説をすべて省き、**「①今までの合計損益」「②保有中・指値待機中の状況」「③新規注文（次の一手）」**だけをスマホで一目で読める超簡潔な箇条書きで出力すること。
+3. LINE本文で新規指値注文・新規エントリー（具体的な指値価格・TP・SL）を提示したものは、必ずすべて `===SIGNALS_JSON_START===` 内にもJSONとして出力し、新規取引として登録されるようにすること（見送りなら `[]`）。
 
-================================================================
-【BLOCK 2：利益最大化のための数学的・構造的絶対条件】
-================================================================
-1. リスクリワード比（RR） 1 : 1.5 以上の絶対厳守：
-   - すべての新規指値注文・新規エントリー提案は、必ず「利確までの値幅（|TP - Entry|） ÷ 損切りまでの値幅（|Entry - SL|） ≧ 1.5」を満たすように設計すること。
-   - もしRR 1.5未満になる場合は、無理に指値やエントリーを提示せず「見送り（静観）」とすること。
-2. スプレッド誤差の事前織り込み：
-   - XMTrading等の実口座スプレッドを考慮し、SLは直近ヒゲの少し外側へ余裕を持たせ、TPは壁の少し手前に設定すること。
-3. 建値保護（ブレークイーブン）＆分割利確ルール：
-   - 保有中ポジションの含み益がTPの50%以上に到達した場合、SLを建値へ移動して負けゼロを確定させ、半分利確して残りを伸ばす指示を出すこと。
-4. 指標ロック＆早朝スプレッド拡大ロック：
-   - `indicator_lock` が `true`、または `session_info.entry_allowed` が `false` の場合は、新規エントリーを絶対に推奨せず「見送り（ロック中）」とすること。
-
-================================================================
-【BLOCK 3：時間軸・注文スタイル・大口投資家（スマートマネー）視点】
-================================================================
-1. 基本スタイル：「短期デイトレ（1〜3時間程度で決着を狙う値幅）」かつ「浅い指値注文（現在値から引きつけた押し目買い・戻り売り）」を基本軸とする（有効期限45〜60分）。
-2. 超厳選の長期（スイング）枠：4H・1Hの大局トレンド、米ドル強弱スコア、世界情勢の3つが完全一致し RR 1:2.5 以上が狙える特選場面に限り「【超厳選・長期スイング枠】」を提示すること。
-3. 大口投資家視点：現在の市場セッション（{session_info['session']}）の特性を踏まえ、個人投資家のストップ狩り（流動性スイープ）に巻き込まれない指値・SL配置を行うこと。
-
-================================================================
-【BLOCK 4：リアルタイム入力データ】
-================================================================
+【リアルタイム入力データ】
 - 現在日時（日本時間）：{NOW_JST.strftime('%Y-%m-%d %H:%M JST')}
-- 現在の市場セッション特性：{json.dumps(session_info, ensure_ascii=False)}
-- 経済指標ロック状態：lock={indicator_lock} / {indicator_lock_reason}
-- 米ドル強弱インデックス（1H連動算出）：{json.dumps(usd_strength, ensure_ascii=False)}
-- XAU/USD 最新チャート指標（4H・1H・15M・5M）：{json.dumps(gold_data, ensure_ascii=False)}
-- サブ6通貨ペア 最新チャート指標：{json.dumps(fx_data_list, ensure_ascii=False)}
-- 最新ニュースヘッドライン：
-{news_headlines}
-- 重要経済指標カレンダー：
-{calendar_data}
-- 現在のAIポジション一覧（OPENは保有中、PENDINGは指値約定待ち）：{json.dumps(trade_log.get('open_positions', []), ensure_ascii=False)}
-- 累計戦績＆5分類敗因タグ学習済み進化ルール：{json.dumps(stats_block, ensure_ascii=False)}
+- 市場セッション：{json.dumps(session_info, ensure_ascii=False)}
+- 経済指標ロック：lock={indicator_lock} / {indicator_lock_reason}
+- 米ドル強弱インデックス：{json.dumps(usd_strength, ensure_ascii=False)}
+- XAU/USD チャート指標：{json.dumps(gold_data, ensure_ascii=False)}
+- サブ6通貨ペア チャート指標：{json.dumps(fx_data_list, ensure_ascii=False)}
+- 最新ニュース：{news_headlines}
+- 経済指標カレンダー：{calendar_data}
+- 現在のAIポジション一覧（OPENは保有中、PENDINGは指値待機中）：{json.dumps(trade_log.get('open_positions', []), ensure_ascii=False)}
+- 累計戦績＆進化ルール：{json.dumps(stats_block, ensure_ascii=False)}
 
-================================================================
-【BLOCK 5：出力フォーマット（新規取引の完全同期ルール）】
-================================================================
-【絶対厳守】
-LINEレポート本文で「新規指値注文（指値エントリー推奨・押し目/戻り目待機で具体的な指値価格・TP・SLを提示）」または「新規エントリー推奨」を出したものは、**すべて「新規取引」として扱い、必ず最初の `===SIGNALS_JSON_START===` 内にJSONとして出力してください！**
-本文に具体的な指値価格・TP・SLを書いたのにJSONへ入れないことは絶対に禁止します。完全見送りの場合のみ空配列 `[]` としてください。
-
+【出力フォーマット（厳守）】
 ===SIGNALS_JSON_START===
 [
   {{
@@ -784,46 +741,29 @@ LINEレポート本文で「新規指値注文（指値エントリー推奨・�
     "entry_price": 0.0,
     "tp": 0.0,
     "sl": 0.0,
-    "reason": "エントリー根拠要約"
+    "reason": "1行の簡潔な根拠"
   }}
 ]
 ===SIGNALS_JSON_END===
 
-続いて、LINEへそのまま送信するユーザー向けレポートを以下の構成で詳しく出力してください。
+📊 **今までの合計損益**
+・確定損益合計：{total_realized_pnl:+}（{len(closed)}戦 {wins}勝{losses}敗 / 勝率 {win_rate}%）
 
-### 👑 1. GOLD（XAU/USD）の取引判断
+💼 **保有中・指値待機中**
+（※OPENがあれば「・銘柄 方向: 買値 → 現在値（含み損益: +〇〇 / TPまであと〇〇 / SLまであと〇〇）」、PENDINGがあれば「・銘柄 方向: 指値 〇〇 待機中（現在値 〇〇）」を1行ずつ記載。なければ「・なし」）
 
-**① 現在の保有ポジション・指値待機状況（AI仮想約定ベース）**
-※`status="OPEN"`（約定済み・保有中）がある場合：売買方向、買った値段 → 今の値段、現在の損益（＋利益／−損）、TP進捗率（%）、TP・SLまでの残り距離、建値移動・保有アドバイスを明記。
-※`status="PENDING"`（指値約定待ち）がある場合：待機中の指値価格、現在値との差、TP・SL予定を明記。
-※どちらもない場合：「現在、GOLDの保有中・指値待機中ポジションはありません。」と記載。
-
-**② 今の相場状況（詳しい分析）**
-- 【上位足4H・1H＆短期15M・5M構造・壁との距離】
-- 【米ドル強弱スコア・世界情勢・大口投資家動向・セッション特性】
-- 【指標ロック・学習ルール・安全装置の状態】
-
-**③ 次の一手・新規取引の具体策（未保有・乗り遅れ向け対応）**
-- 【短期デイトレ（1〜3時間完結・浅い指値メイン）】
-  - 判断アクション：『新規指値エントリー推奨』 / 『押し目・戻り目待機（指値設定）』 / 『見送り（静観）』
-  - すでに保有中の場合でも、「約定に乗れていない人が今から新規で取引するならどうすべきか」を必ず提示すること。
-  - エントリー目安（浅い指値・有効期限45〜60分）：〇〇.〇〇 ／ 利確（TP）：〇〇.〇〇 ／ 損切り（SL）：〇〇.〇〇（リスクリワード比 1 : 〇.〇）
-  - 詳しい判断根拠
-- 【超厳選・長期スイング枠】（該当する高確度時のみ記載。なければ「現在、超厳選の長期枠に該当する高確度セットアップはありません」と記載）
-
----
-### 🎯 2. それ以外（サブ6通貨ペア）の取引判断
-
-**① 現在の保有ポジション・指値待機状況（AI仮想約定ベース）**
-（保有中・指値待機中があれば詳細、なければ「現在、サブ6通貨ペアの保有中・指値待機中ポジションはありません。」）
-
-**② 今の相場状況＆次の一手（相関ダブり防止・最良1銘柄厳選）**
-（サブ6通貨全体の地合い、最良1銘柄の短期戦略・エントリー・TP・SL・RR比・詳しい判断根拠、または見送り理由）
+🎯 **新規注文（次の一手）**
+・👑 **GOLD（XAU/USD）**：『指値買い / 指値売り / 見送り』
+  - 指値：〇〇.〇〇 ／ TP：〇〇.〇〇 ／ SL：〇〇.〇〇（RR 1:〇.〇）
+  - 根拠：（1〜2行で核心のみ簡潔に）
+  （※超厳選の長期枠がある場合のみ1行追加）
+・🎯 **サブ通貨（最良1銘柄）**：『銘柄名 指値買い / 指値売り / 見送り』
+  - 指値：〇〇.〇〇 ／ TP：〇〇.〇〇 ／ SL：〇〇.〇〇（RR 1:〇.〇）
+  - 根拠：（1行で核心のみ簡潔に）
 """
     full_text = generate_with_retry(main_prompt)
 
     message_body = full_text
-    registered_count = 0
     if "===SIGNALS_JSON_START===" in full_text and "===SIGNALS_JSON_END===" in full_text:
         sig_raw = full_text.split("===SIGNALS_JSON_START===")[1].split("===SIGNALS_JSON_END===")[0].strip()
         message_body = full_text.split("===SIGNALS_JSON_END===")[1].strip()
@@ -832,7 +772,6 @@ LINEレポート本文で「新規指値注文（指値エントリー推奨・�
             existing_keys = {(p["symbol"], p["direction"], round(float(p["entry_price"]), 2)) for p in trade_log.get("open_positions", [])}
             for sig in new_signals:
                 if indicator_lock or not session_info["entry_allowed"]:
-                    print(f"[Filter Skip] 指標ロックまたは時間帯制限のため新規登録をブロック: {sig.get('symbol')}")
                     continue
 
                 entry_val = float(sig.get("entry_price", 0))
@@ -844,9 +783,7 @@ LINEレポート本文で「新規指値注文（指値エントリー推奨・�
                 reward = abs(tp_val - entry_val)
                 risk = abs(entry_val - sl_val)
                 rr_ratio = (reward / risk) if risk > 0 else 0.0
-
                 if rr_ratio < 1.45:
-                    print(f"[RR Filter Skip] {sig.get('symbol')} RR={rr_ratio:.2f} のため期待値不足でスキップ")
                     continue
 
                 dedup_key = (sig["symbol"], sig["direction"], round(entry_val, 2))
@@ -879,18 +816,15 @@ LINEレポート本文で「新規指値注文（指値エントリー推奨・�
                         "status": "OPEN" if is_already_filled else "PENDING",
                     })
                     existing_keys.add(dedup_key)
-                    registered_count += 1
             save_json(TRADE_LOG_FILE, trade_log)
         except Exception as e:
             print(f"[Signal JSON Parse Error] {e}")
 
-    header = f"⏰ 【定期AI相場レポート】{NOW_JST.strftime('%m/%d %H:%M')} JST\n"
-    if registered_count > 0:
-        header += f"📝 新規取引 {registered_count}件 をシステム登録しました（指値到達で自動約定・TP/SLで自動決着）\n"
+    header = f"⏰ {NOW_JST.strftime('%m/%d %H:%M')} JST\n"
     if indicator_lock:
-        header += f"{indicator_lock_reason}\n\n"
+        header += f"{indicator_lock_reason}\n"
     if evo_reports:
-        header += "\n" + "\n\n".join(evo_reports) + "\n\n" + "=" * 24 + "\n\n"
+        header += "\n".join(evo_reports) + "\n\n"
 
     send_line_message(header + message_body)
 
