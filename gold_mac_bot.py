@@ -335,7 +335,6 @@ def calc_usd_strength_index(fx_data_list):
         elif item.get("symbol") == "EUR/USD":
             eurusd_chg = item.get("change_1h_percent", 0.0)
 
-    # USD/JPY上昇 ＋ EUR/USD下落 ＝ 強いドル買い（GOLD逆風）
     usd_score = round((usdjpy_chg - eurusd_chg) / 2.0, 3)
     if usd_score >= 0.12:
         bias = "明確な米ドル全面高（GOLDには強い逆風・売り優位）"
@@ -390,7 +389,6 @@ def fetch_economic_calendar_and_lock():
                 high_events.append(
                     f"- [{country}] {ev.get('title')} | 日時(UTC): {date_str} | 重要度: {impact} | 予想: {ev.get('forecast')} / 前回: {ev.get('previous')}"
                 )
-            # High指標（特にUSD/JPY/EUR）の発表30分前〜15分後は新規エントリー強制ロック
             if impact == "High" and country in ["USD", "JPY", "EUR"] and date_str:
                 try:
                     ev_dt = datetime.datetime.fromisoformat(date_str)
@@ -453,7 +451,6 @@ def check_positions_and_evolve(trade_log, evolution_data, market_snapshots, news
         # ステップA：PENDING（指値待機中）の約定判定（スプレッド考慮）
         if status == "PENDING":
             filled = False
-            # BUY指値はAskがentry以下になる必要があるため、Bid(仲値)が entry - spread 以下で確実約定
             if direction == "BUY" and (low_2h <= (entry - spread * 0.5) or cur <= (entry - spread * 0.5)):
                 filled = True
             elif direction == "SELL" and (high_2h >= (entry + spread * 0.5) or cur >= (entry + spread * 0.5)):
@@ -514,7 +511,7 @@ def check_positions_and_evolve(trade_log, evolution_data, market_snapshots, news
             be_advice = "通常ホールド継続"
             if progress_pct >= 50.0 and not pos.get("breakeven_triggered", False):
                 pos["breakeven_triggered"] = True
-                pos["sl"] = round(entry, 4)  # システム上のSLも建値へ引き上げ（負けゼロ確定）
+                pos["sl"] = round(entry, 4)
                 be_advice = f"🛡️【建値移動・半分利確推奨】TPまで{progress_pct}%到達！SLを建値({entry})へ移動し負けゼロを確定させてください。"
                 status_notices.append(f"🛡️【建値移動発動】{sym} ({direction}) が目標の{progress_pct}%まで伸びたため、SLを建値({entry})へ引き上げました。")
             elif pos.get("breakeven_triggered", False):
@@ -849,7 +846,6 @@ def run_weekday_analysis(trade_log, evolution_data):
                 risk = abs(entry_val - sl_val)
                 rr_ratio = (reward / risk) if risk > 0 else 0.0
 
-                # リスクリワード比 1 : 1.45 未満は期待値が低いためシステム側で自動除外
                 if rr_ratio < 1.45:
                     print(f"[RR Filter Skip] {sig.get('symbol')} RR={rr_ratio:.2f} のため期待値不足でスキップ")
                     continue
@@ -867,7 +863,9 @@ def run_weekday_analysis(trade_log, evolution_data):
                     elif sig["direction"] == "SELL" and (cur_val >= (entry_val + spread * 0.5) or high_2h >= (entry_val + spread * 0.5)):
                         is_already_filled = True
 
+                    trade_id = f"{sig['symbol'].replace('/', '')}_{sig['direction']}_{NOW_JST.strftime('%Y%m%d%H%M')}"
                     trade_log["open_positions"].append({
+                        "trade_id": trade_id,
                         "symbol": sig["symbol"],
                         "timeframe_type": sig.get("timeframe_type", "短期デイトレ（1〜3時間・浅い指値）"),
                         "direction": sig["direction"],
