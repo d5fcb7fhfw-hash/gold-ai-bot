@@ -1,6 +1,40 @@
 {
   "open_positions": [
     {
+      "symbol": "EUR/USD",
+      "timeframe_type": "短期デイトレ（1〜3時間・浅い指値）",
+      "direction": "BUY",
+      "entry_price": 1.0964,
+      "current_price": 1.0969,
+      "tp": 1.0988,
+      "sl": 1.0952,
+      "unrealized_pnl": 0.0005,
+      "reason": "1H足上昇トレンドの中、15M足RSIが29.8まで急低下し調整完了シグナル。1H・EMA20（1.0964）と6H安値（1.0965）が重なる強力サポートでの押し目買い。",
+      "opened_at": "2026-11-26 11:01 JST",
+      "status": "OPEN",
+      "tp_progress_percent": 20.8,
+      "dist_to_tp": 0.0019,
+      "dist_to_sl": 0.0017,
+      "management_advice": "通常ホールド継続"
+    },
+    {
+      "symbol": "XAU/USD",
+      "timeframe_type": "短期デイトレ（1〜3時間・浅い指値）",
+      "direction": "SELL",
+      "entry_price": 3588.0,
+      "current_price": 3582.4907,
+      "tp": 3575.0,
+      "sl": 3593.2,
+      "rr_ratio": 2.5,
+      "breakeven_triggered": false,
+      "unrealized_pnl": 5.5093,
+      "reason": "4H・1Hの下降トレンド優勢下、24H高値（3591.82）手前の流動性プール（上ヒゲ清算帯）及び3590ドルのラウンドナンバーを背にした戻り売り。RR 1:2.5を厳守。",
+      "opened_at": "2026-11-26 11:33 JST",
+      "status": "OPEN"
+    }
+  ],
+  "closed_history": [
+    {
       "symbol": "XAU/USD",
       "timeframe_type": "短期デイトレ（1〜3時間・浅い指値）",
       "direction": "SELL",
@@ -11,21 +45,13 @@
       "unrealized_pnl": 0.0,
       "reason": "1H足下降トレンド継続中。直上の節目3570ドルおよび1H・EMA50（3576.37ドル）手前での戻り売り優位。直近15M高値上抜けの流動性回収を浅い指値で狙う。",
       "opened_at": "2026-11-26 11:01 JST",
-      "status": "OPEN"
-    },
-    {
-      "symbol": "EUR/USD",
-      "timeframe_type": "短期デイトレ（1〜3時間・浅い指値）",
-      "direction": "BUY",
-      "entry_price": 1.0964,
-      "current_price": 1.0964,
-      "tp": 1.0988,
-      "sl": 1.0952,
-      "unrealized_pnl": 0.0,
-      "reason": "1H足上昇トレンドの中、15M足RSIが29.8まで急低下し調整完了シグナル。1H・EMA20（1.0964）と6H安値（1.0965）が重なる強力サポートでの押し目買い。",
-      "opened_at": "2026-11-26 11:01 JST",
-      "status": "OPEN"
+      "status": "CLOSED",
+      "result": "WIN",
+      "close_price": 3556.5,
+      "pnl": 15.0,
+      "closed_at": "2026-11-26 11:33 JST",
+      "failure_tag": "NONE",
+      "post_analysis": "1H足の下降トレンド継続環境において、直近節目（3570ドル）および1H・EMA50の手前で流動性回収（直近15M高値ブレイクを誘うダマシの上昇）を狙った浅い指値エントリーが完璧に機能。ファンダメンタルズ面でも米利上げ観測を背景としたドル高・金軟調の流れと一致しており、上位足の順張り×下位足の流動性回収という期待値の高いセットアップが15ドルの値幅利確をもたらした。"
     }
-  ],
-  "closed_history": []
+  ]
 }
