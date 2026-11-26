@@ -1,37 +1,22 @@
 {
   "open_positions": [
     {
-      "symbol": "EUR/USD",
-      "timeframe_type": "短期デイトレ（1〜3時間・浅い指値）",
-      "direction": "BUY",
-      "entry_price": 1.0964,
-      "current_price": 1.0978,
-      "tp": 1.0988,
-      "sl": 1.0964,
-      "unrealized_pnl": 0.0014,
-      "reason": "1H足上昇トレンドの中、15M足RSIが29.8まで急低下し調整完了シグナル。1H・EMA20（1.0964）と6H安値（1.0965）が重なる強力サポートでの押し目買い。",
-      "opened_at": "2026-11-26 11:01 JST",
-      "status": "OPEN",
-      "tp_progress_percent": 58.3,
-      "dist_to_tp": 0.001,
-      "dist_to_sl": 0.0014,
-      "management_advice": "通常ホールド継続",
-      "breakeven_triggered": true
-    },
-    {
       "symbol": "XAU/USD",
       "timeframe_type": "短期デイトレ（1〜3時間・浅い指値）",
       "direction": "SELL",
       "entry_price": 3578.5,
-      "current_price": 3569.2268,
+      "current_price": 3573.9801,
       "tp": 3561.5,
       "sl": 3587.0,
       "rr_ratio": 2.0,
       "breakeven_triggered": false,
-      "unrealized_pnl": 9.2732,
+      "unrealized_pnl": 4.5199,
       "reason": "4H・1H下降トレンド継続。15M戻り高値手前の流動性ゾーンを狙った戻り売り（進化ルールに基づき8.5ドルのSLバッファを確保）。",
       "opened_at": "2026-11-26 17:09 JST",
-      "status": "OPEN"
+      "status": "OPEN",
+      "tp_progress_percent": 26.6,
+      "dist_to_tp": 12.4801,
+      "dist_to_sl": 13.0199
     }
   ],
   "closed_history": [
@@ -159,6 +144,30 @@
       "closed_at": "2026-11-26 17:09 JST",
       "failure_tag": "TAG_4",
       "post_analysis": "3500ドル台の高ボラティリティ局面における急反発に対し、SL幅6.0ドルは抵抗帯外側のノイズ許容幅として狭すぎ、上ヒゲの踏み上げに刈られて決着した。"
+    },
+    {
+      "symbol": "EUR/USD",
+      "timeframe_type": "短期デイトレ（1〜3時間・浅い指値）",
+      "direction": "BUY",
+      "entry_price": 1.0964,
+      "current_price": 1.0978,
+      "tp": 1.0988,
+      "sl": 1.0964,
+      "unrealized_pnl": 0.0014,
+      "reason": "1H足上昇トレンドの中、15M足RSIが29.8まで急低下し調整完了シグナル。1H・EMA20（1.0964）と6H安値（1.0965）が重なる強力サポートでの押し目買い。",
+      "opened_at": "2026-11-26 11:01 JST",
+      "status": "CLOSED",
+      "tp_progress_percent": 58.3,
+      "dist_to_tp": 0.001,
+      "dist_to_sl": 0.0014,
+      "management_advice": "通常ホールド継続",
+      "breakeven_triggered": true,
+      "result": "LOSS",
+      "close_price": 1.0964,
+      "pnl": 0.0,
+      "closed_at": "2026-11-26 17:51 JST",
+      "failure_tag": "TAG_4",
+      "post_analysis": "15M足の急落局面においてサポート直上へ先回り指値を置いたため、反発初動の揺らぎや下ヒゲノイズを許容できず同値・建値刈りとなった。"
     }
   ]
 }
