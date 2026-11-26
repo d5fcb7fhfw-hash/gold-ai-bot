@@ -1,6 +1,6 @@
 {
-  "consecutive_losses": 2,
-  "strict_mode": true,
+  "consecutive_losses": 0,
+  "strict_mode": false,
   "tag_counts": {
     "TAG_1": 0,
     "TAG_2": 0,
@@ -24,5 +24,5 @@
     "下位足急落時の押し目買いでは、サポート直上の先回り指値を避け、15M足での反発サイン（下ヒゲ・包み足）確定後の突入を原則とする"
   ],
   "weekend_market_outlook": "",
-  "last_evolution_note": "下位足急落を伴う押し目買いでは、サポート直上での先回り指値を避け、15M足の下ヒゲ確定など反発シグナル形成後の突入を徹底する。"
+  "last_evolution_note": "上位足トレンド継続局面の戻り売りでは、直近高値手前の流動性回収狙いと8ドル以上のSLバッファ確保の組み合わせを高勝率セットアップとして定着させる。"
 }

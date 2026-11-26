@@ -4,19 +4,31 @@
       "symbol": "XAU/USD",
       "timeframe_type": "短期デイトレ（1〜3時間・浅い指値）",
       "direction": "SELL",
-      "entry_price": 3578.5,
-      "current_price": 3573.9801,
-      "tp": 3561.5,
-      "sl": 3587.0,
+      "entry_price": 3565.0,
+      "current_price": 3556.147,
+      "tp": 3547.0,
+      "sl": 3574.0,
       "rr_ratio": 2.0,
       "breakeven_triggered": false,
-      "unrealized_pnl": 4.5199,
-      "reason": "4H・1H下降トレンド継続。15M戻り高値手前の流動性ゾーンを狙った戻り売り（進化ルールに基づき8.5ドルのSLバッファを確保）。",
-      "opened_at": "2026-11-26 17:09 JST",
-      "status": "OPEN",
-      "tp_progress_percent": 26.6,
-      "dist_to_tp": 12.4801,
-      "dist_to_sl": 13.0199
+      "unrealized_pnl": 8.853,
+      "reason": "1H下降トレンド継続中の戻り売り。15MレジスタンスとEMA密集帯に引きつけ、3550割れ流動性を狙う。",
+      "opened_at": "2026-11-26 19:47 JST",
+      "status": "OPEN"
+    },
+    {
+      "symbol": "GBP/USD",
+      "timeframe_type": "短期デイトレ（1〜3時間・浅い指値）",
+      "direction": "BUY",
+      "entry_price": 1.3106,
+      "current_price": 1.3113,
+      "tp": 1.313,
+      "sl": 1.3094,
+      "rr_ratio": 2.0,
+      "breakeven_triggered": false,
+      "unrealized_pnl": 0.0,
+      "reason": "1H上昇トレンド継続局面。1H EMA20および直近下値支持帯での押し目買い。",
+      "opened_at": "2026-11-26 19:47 JST",
+      "status": "PENDING"
     }
   ],
   "closed_history": [
@@ -168,6 +180,30 @@
       "closed_at": "2026-11-26 17:51 JST",
       "failure_tag": "TAG_4",
       "post_analysis": "15M足の急落局面においてサポート直上へ先回り指値を置いたため、反発初動の揺らぎや下ヒゲノイズを許容できず同値・建値刈りとなった。"
+    },
+    {
+      "symbol": "XAU/USD",
+      "timeframe_type": "短期デイトレ（1〜3時間・浅い指値）",
+      "direction": "SELL",
+      "entry_price": 3578.5,
+      "current_price": 3573.9801,
+      "tp": 3561.5,
+      "sl": 3587.0,
+      "rr_ratio": 2.0,
+      "breakeven_triggered": false,
+      "unrealized_pnl": 4.5199,
+      "reason": "4H・1H下降トレンド継続。15M戻り高値手前の流動性ゾーンを狙った戻り売り（進化ルールに基づき8.5ドルのSLバッファを確保）。",
+      "opened_at": "2026-11-26 17:09 JST",
+      "status": "CLOSED",
+      "tp_progress_percent": 26.6,
+      "dist_to_tp": 12.4801,
+      "dist_to_sl": 13.0199,
+      "result": "WIN",
+      "close_price": 3561.5,
+      "pnl": 17.0,
+      "closed_at": "2026-11-26 19:47 JST",
+      "failure_tag": "NONE",
+      "post_analysis": "上位足下降トレンドに沿い、15M戻り高値手前の流動性プールを活用した指値と8.5ドルの適切なSLバッファ設定により、ヒゲ狩りを回避して+17.0ドルの利確を達成した。"
     }
   ]
 }
